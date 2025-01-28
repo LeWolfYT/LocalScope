@@ -1567,7 +1567,7 @@ def parsetimelength(timestamp):
     finalhours += secs
     return finalhours
 def parseRawTimeStamp(timestamp):
-    time = dt.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S+00:00/"+timestamp.split("/")[1])
+    time = dt.datetime.strptime(timestamp, "%Y-%m+00:00/"+timestamp.split("/")[1])
     time = time - dt.timedelta(hours=4)
     periodtime = parsetimelength(timestamp)
     return (time, time + dt.timedelta(hours=periodtime), periodtime)
@@ -1942,7 +1942,7 @@ def main():
         elif currentscene == -1:
             now = dt.datetime.now()
             domusic()
-            obstime = dt.datetime.strptime("-".join(weather2["validTimeLocal"].split("-")[:-1]), "%Y-%m-%dT%H:%M:%S")
+            obstime = dt.datetime.strptime("-".join(weather2["validTimeLocal"].split("-")[:-1]), "%Y-%m")
             #obstimetemp = obstime.replace(tzinfo=tz.utc)
             #obstimetemp = obstimetemp.astimezone(tz.timezone(getattr(varr, "timezone", "UTC")))
             #obstimeshort = splubby(obstimetemp.strftime("%I:%M %p"))
@@ -2674,7 +2674,7 @@ def main():
                 tickertimer -= 60 * delta
             
             tickerright = ""
-            obstime = dt.datetime.strptime("-".join(weather2["validTimeLocal"].split("-")[:-1]), "%Y-%m-%dT%H:%M:%S")
+            obstime = dt.datetime.strptime("-".join(weather2["validTimeLocal"].split("-")[:-1]), "%Y-%m")
             obstimeshort = splubby(obstime.strftime("%I:%M %p"))
             if ticker == 0:
                 tickername = f'Last updated at {obstimeshort}'
