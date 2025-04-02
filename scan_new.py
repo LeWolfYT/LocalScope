@@ -388,9 +388,6 @@ sidebar_times = [int(i) for i in schedule_times]
 presentation = getattr(varr, "presentation", "short")
 
 customtransition = getattr(varr, "customtransition", False)
-transitionpath = getattr(varr, "transitionpath", "medic.mov")
-realtransition = vid.Video(transitionpath, use_pygame_audio=True)
-realtransition.play()
 
 #note that this only applies when a schedule is active, and a manual override will always show the full presentation on loop
 
