@@ -7,11 +7,11 @@ affiliatesurf = pg.image.load("{}")
 ah = affiliatesurf.get_height()
 aw = affiliatesurf.get_width()
 affiliatesurf = pg.transform.smoothscale(affiliatesurf, (round(aw/ah*64), 64))
-""".format(apath)
+""".format(apath.replace("\\", "\\\\"))
 
 fixtures = [
 """
 global affiliatesurf
-window.blit(affiliatesurf, (screenwidth-affiliatesurf.get_width(), 0))
+window.blit(affiliatesurf, (screenwidth-affiliatesurf.get_width(), -64*cuefade))
 """
 ]

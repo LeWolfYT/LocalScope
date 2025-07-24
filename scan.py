@@ -1,25 +1,81 @@
-import threading as th
-#import multiprocessing as mp
-import requests as r
-import pygame as pg
-import cv2
 import datetime as dt
-from io import BytesIO
-import isodate as it
-import pytz as tz
-import vars as varr
 import json
-import os
-import sys
-import random as rd
-import time
 import math
-import map_tile_stitcher as ms
-import map_tile_stitcher.util.conversion as msc
-import geocoder as gc
+import os
+import random as rd
 import runpy as rp
 import subprocess as sp
+import threading as th
+import time
+import traceback as tra
+from io import BytesIO
+
+import cv2
+import geocoder as gc
+import isodate as it
+import map_tile_stitcher as ms
+import map_tile_stitcher.util.conversion as msc
+import numpy as np
+import pygame as pg
+import pytz as tz
+import requests as r
+from pygame._sdl2.mixer import set_post_mix
+
+import vars as varr
+#import multiprocessing as mp
 #import ffmpeg_streaming as ff
+
+global stinky
+stinky = False
+
+global streambg
+streambg = getattr(varr, "streambg", False)
+
+global profiling
+profiling = {
+    "time_ui": 0,
+    "time_blits": 0,
+    "time_stream": 0,
+    "time_math": 0,
+}
+global framesp
+global framect
+framect = 0
+framesp = 0
+
+def clear_profile():
+    global profiling
+    profiling = {
+        "time_ui": 0,
+        "time_blits": 0,
+        "time_stream": 0,
+        "time_math": 0,
+    }
+
+profile = False
+
+def profiling_sect(section):
+    def profiling_wrap(func):
+        def wrapper(*args, **kwargs):
+            if profile:
+                start = time.perf_counter()
+                val = func(*args, **kwargs)
+                end = time.perf_counter()
+                diff = end - start
+                profiling[section] += diff
+                return val
+            else:
+                return func(*args, **kwargs)
+        return wrapper
+    return profiling_wrap
+
+def profiling_start():
+    return time.perf_counter()
+
+def profiling_end(start, section):
+    profiling[section] += (time.perf_counter() - start)
+
+eventt = th.Event()
 
 print("getting variables")
 sound = getattr(varr, "sound", True)
@@ -69,7 +125,8 @@ filters = {
 
 actions = {
     "pre": [],
-    "post": []
+    "post": [],
+    "mix": [] #this is for post-mixing
 }
 
 travelcities = getattr(varr, "travelcities", ["KATL", "KBOS", "KORD", "KDFW", "KDEN", "KDTW", "KLAX", "KNYC", "KMCO", "KSFO", "KSEA", "KDCA"])
@@ -122,6 +179,10 @@ global crunchcachecol
 crunchcachecol = {}
 global bigcrunchcache
 bigcrunchcache = {}
+
+global rastercache
+rastercache = {} #this cache is special because it caches a ton of blits
+
 print("getting more options")
 global scaled
 scaled = getattr(varr, "scaled", False)
@@ -136,7 +197,13 @@ global partnerlogo
 partnerlogo = getattr(varr, "logo", None)
 
 rheaders = {
-    "User-Agent": "(lewolfyt.github.io, localscope+ciblox3@gmail.com)"
+    "User-Agent": "(lewolfyt.cc, localscope+ciblox3@gmail.com)"
+}
+
+rheaders_maps = {
+    "User-Agent": "(lewolfyt.cc, localscope+ciblox3@gmail.com)",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache"
 }
 
 global currentscene
@@ -215,12 +282,14 @@ musicmode = getattr(varr, "musicmode", "playlist")
 
 playmusic = getattr(varr, "musicdir", False)
 
+@profiling_sect("time_math")
 def splubby(time):
     if list(time)[0] == "0":
         return time[1:]
     else:
         return time
 
+@profiling_sect("time_math")
 def lltoxy(lat, long, zoom):
     n = 2 ** zoom
     n2 = 2 ** (zoom-1)
@@ -228,6 +297,7 @@ def lltoxy(lat, long, zoom):
     y = math.floor((1-(math.log(math.tan(lat * math.pi / 180) +(1/(math.cos(lat * math.pi / 180))))) / math.pi) * n2)
     return (x, y)
 
+@profiling_sect("time_math")
 def wraptext(text, rect, font):
     rect = pg.Rect(rect)
     y = rect.top
@@ -262,39 +332,29 @@ def wraptext(text, rect, font):
 
     return lines
 
-def degrees_to_compass(degrees):
-    if degrees == None:
-        return "Variable"
-    """Converts degrees (0-360) to 16-point compass direction."""
-
-    directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
-
-    index = round(degrees / 22.5) % 16  # Calculate index, wrap around for 360
-
-    return directions[index]
-
 print("initializing pygame")
-pg.mixer.pre_init(devicename=getattr(varr, "audioin", None))
+if getattr(varr, "audioin", None):
+    pg.mixer.pre_init(44100, 32, 2, 512, getattr(varr, "audioin", None))
+else:
+    pg.mixer.pre_init(44100, 32, 2, 512)
 pg.init()
 print("done with pygame init")
 
 if not scaled:
     print("making unscaled window")
-    realwindow = pg.Window("LocalScope v1.5.1_1", (screenwidth, 768))
+    realwindow = pg.Window("LocalScope v1.6", (screenwidth, 768))
     realwindow.borderless = True
     window = realwindow.get_surface()
 else:
     print("making fake window")
     window = pg.Surface((screenwidth, 768))
     print("making actual window")
-    realwindow = pg.Window("LocalScope v1.5.1_1", scale)
+    realwindow = pg.Window("LocalScope v1.6", scale)
     final = realwindow.get_surface()
 
 #realops = pg.Window("LocalScope - Admin Panel", (640, 480))
 
 #opswindow = realops.get_surface()
-
-transition_s = pg.Surface((window.get_width(), window.get_height()))
 
 print("screensaver disabled")
 pg.display.set_allow_screensaver(False)
@@ -304,13 +364,43 @@ pg.mouse.set_visible(False)
 
 #print("caption set")
 #pg.display.set_caption("LocalScope v1.4")
-print("LocalScope v1.5.1 - The Everything Update (Credits Fix)")
+print("LocalScope v1.6 - The Scheduling Update and also Some Really Smooth Animations")
+
+#get schedule attributes
+print("getting schedule")
+
+schedule_active = getattr(varr, "scheduled", False)
+
+schedule_mode = getattr(varr, "schedule_mode", "minutes")
+
+schedule_times = getattr(varr, "schedule_times", [18, 48]) #in minutes mode, this is the minute of the hour that it will fire on
+schedule_times = [int(i) for i in schedule_times]
+
+sidebar_times = getattr(varr, "sidebar_times", [8, 28, 38, 58]) #in minutes mode, this is the minute of the hour that it will fire on
+sidebar_times = [int(i) for i in sidebar_times]
+
+#here we'll get the presentation mode. "short" is just the normal weather section, "long" includes weather+health and custom slides
+presentation = getattr(varr, "presentation", "short")
+
+customtransition = getattr(varr, "customtransition", False)
+
+#note that this only applies when a schedule is active, and a manual override will always show the full presentation on loop
+
+#a bit of documentation here (woah, in this spaghetti? i could never):
+#schedulemode defines how the schedule times are set up
+#minutes: fires at the specified minute(s) of every hour
+#hours: fires at the specified hour(s)
+#mixed: fires at the specified minute(s) of the specified hour(s), formatted as [[hour, hour, ...], [minute, minute, ...]]
+#custom: fires at the specified time(s) of the day
+
+#right now it's all just minutes, since time constraints
 
 if sound:
     print("loading sound")
     daytheme = pg.mixer.Sound(varr.daytheme)
     nighttheme = pg.mixer.Sound(varr.nighttheme)
 
+@profiling_sect("time_math")
 def generateGradient(col1, col2, w=screenwidth, h=768, a1=255, a2=255):
     r1, g1, b1 = col1[0], col1[1], col1[2]
     r2, g2, b2 = col2[0], col2[1], col2[2]
@@ -326,43 +416,80 @@ def generateGradient(col1, col2, w=screenwidth, h=768, a1=255, a2=255):
 
 blurmode = getattr(varr, "blurmode", "gaussian")
 
+cache["blur"] = {}
+cache["blur2"] = {}
+
+@profiling_sect("time_math")
 def blur(surf: pg.Surface, radius):
-    if blurmode == "box":
-        return pg.transform.box_blur(surf, radius)
-    elif blurmode == "gaussian":
-        return pg.transform.gaussian_blur(surf, radius)
-    elif blurmode == "dropshadow":
-        
-        transparent = pg.Surface((surf.get_width()-6, surf.get_height()-6), flags=pg.SRCALPHA)
-        transparent.blit(surf, (-3, -3), special_flags=pg.BLEND_RGBA_ADD)
-        transparent.fill((32, 32, 32, 255), special_flags=pg.BLEND_RGBA_ADD)
-        
-        return transparent
+    if surf in cache["blur"]:
+        return cache["blur"][surf]
     else:
-        return pg.Surface((1, 1))
+        if blurmode == "box":
+            cache["blur"][surf] = pg.transform.box_blur(surf, radius)
+            return cache["blur"][surf]
+        elif blurmode == "gaussian":
+            cache["blur"][surf] = pg.transform.gaussian_blur(surf, radius)
+            return cache["blur"][surf]
+        elif blurmode == "dropshadow":
+            transparent = pg.Surface((surf.get_width()-6, surf.get_height()-6), flags=pg.SRCALPHA)
+            transparent.blit(surf, (-3, -3), special_flags=pg.BLEND_RGBA_ADD)
+            transparent.fill((32, 32, 32, 255), special_flags=pg.BLEND_RGBA_ADD)
+            cache["blur"][surf] = transparent
+            return transparent
+        else:
+            return pg.Surface((1, 1))
 
+@profiling_sect("time_math")
 def blur2(surf: pg.Surface, radius):
-    if blurmode == "box":
-        return pg.transform.box_blur(surf, radius)
-    elif blurmode == "gaussian":
-        return pg.transform.gaussian_blur(surf, radius)
-    elif blurmode == "dropshadow":
-        transparent = surf.copy()
-        transparent.fill((192, 192, 192, 255), special_flags=pg.BLEND_RGBA_MULT)
-        
-        return transparent
-    else:
-        return pg.Surface((1, 1))
+    if surf in cache["blur2"]:
+        return cache["blur2"][surf]
+    else:        
+        if blurmode == "box":
+            cache["blur2"][surf] = pg.transform.box_blur(surf, radius)
+            return cache["blur2"][surf]
+        elif blurmode == "gaussian":
+            cache["blur2"][surf] = pg.transform.gaussian_blur(surf, radius)
+            return cache["blur2"][surf]
+        elif blurmode == "dropshadow":
+            transparent = surf.copy()
+            transparent.fill((192, 192, 192, 255), special_flags=pg.BLEND_RGBA_MULT)
+            cache["blur2"][surf] = transparent
+            return transparent
+        else:
+            return pg.Surface((1, 1))
 
+@profiling_sect("time_math")
 def turnintoashadow(surf: pg.Surface, shadow=127):
-    newsurf = surf.copy().convert_alpha()
-    newsurf.fill((0, 0, 0, shadow), special_flags=pg.BLEND_RGBA_MULT)
-    #black = pg.Surface((surf.get_width(), surf.get_height()), pg.SRCALPHA)
-    #black.fill((0, 0, 0, shadow))
-    #newsurf.blit(black, (0, 0), special_flags=pg.BLEND_RGBA_MULT)
-    newsurf = blur2(expandSurfaceAlpha(newsurf, 6), 4)
-    return newsurf
+    if surf in cache:
+        return cache[surf]
+    else:
+        newsurf = surf.copy().convert_alpha()
+        newsurf.fill((0, 0, 0, shadow), special_flags=pg.BLEND_RGBA_MULT)
+        #black = pg.Surface((surf.get_width(), surf.get_height()), pg.SRCALPHA)
+        #black.fill((0, 0, 0, shadow))
+        #newsurf.blit(black, (0, 0), special_flags=pg.BLEND_RGBA_MULT)
+        newsurf = blur2(expandSurfaceAlpha(newsurf, 6), 4)
+        cache[surf] = newsurf
+        return newsurf
 
+cache["delicate"] = {}
+
+@profiling_sect("time_math")
+def turnintoashadow_delicate(surf: pg.Surface, shadow=127):
+    #this uses a slightly different process for some special cases
+    if surf in cache["delicate"]:
+        return cache["delicate"][surf]
+    else:
+        newsurf = surf.copy()
+        newsurf.fill((0, 0, 0, shadow), None, pg.BLEND_RGBA_MULT)
+        #black = pg.Surface((surf.get_width(), surf.get_height()), pg.SRCALPHA)
+        #black.fill((0, 0, 0, shadow))
+        #newsurf.blit(black, (0, 0), special_flags=pg.BLEND_RGBA_MULT)
+        newsurf = blur2(expandSurfaceDelicate(newsurf, 6), 4)
+        cache[surf] = newsurf
+        return newsurf
+
+@profiling_sect("time_math")
 def generateGradientHoriz(col1, col2, w=screenwidth, h=768, a1=255, a2=255):
     r1, g1, b1 = col1[0], col1[1], col1[2]
     r2, g2, b2 = col2[0], col2[1], col2[2]
@@ -373,8 +500,6 @@ def generateGradientHoriz(col1, col2, w=screenwidth, h=768, a1=255, a2=255):
         pg.draw.line(surface, ((r1*(1-tr) + r2*tr), (g1*(1-tr) + g2*tr), (b1*(1-tr) + b2*tr), (a1*(1-tr) + a2*tr)), (i, 0), (i, h))
     return surface
 
-def fallback(val, fallback):
-    return val if val["value"] != None else fallback
 
 apikey = varr.apikey
 mapkey = varr.mapkey
@@ -393,9 +518,11 @@ pres_s = "in." if unites == "e" else ("mbar" if not compact else "mb")
 
 #visibility
 visi = ("miles" if not compact else "mi.") if unites == "e" else ("kilometers" if not compact else "km")
+visi_c = "mi." if unites == "e" else "km"
 
 #precip
 prec = ("inches" if not compact else "in.") if unites == "e" else ("millimeters" if not compact else "mm")
+prec_c = "in." if unites == "e" else "mm"
 
 locl = getattr(varr, "locale", "en-US")
 
@@ -409,7 +536,8 @@ with open(langf, "r") as f:
     lang = json.loads(f.read())
 
 tile_amounts = 20
-
+global skipflag
+skipflag = False
 class TextFilter:
     """
     A filter used on text.
@@ -443,6 +571,38 @@ class GeneralColorFilter(TextFilter):
         surf2 = surf.copy()
         surf2.fill(self.color, special_flags=pg.BLEND_RGBA_MULT)
         return surf2
+
+class ShrinkFilter(TextFilter):
+    def __init__(self, main=True, pre=False, post=False, shadow=2):
+        super().__init__(main, pre, post, shadow)
+    def filter(self, text, font, surf, point, alpha):
+        scal = 2/len(text)
+        return (pg.transform.smoothscale_by(surf, (scal[0], 1))), pg.transform.smoothscale_by(surf[1], (scal, 1))
+
+class CrunchFilter(TextFilter):
+    def __init__(self, main=True, pre=False, post=False, shadow=2, target=0):
+        self.target = target
+        super().__init__(main, pre, post, shadow)
+    def filter(self, text, font, surf, point, alpha):
+        if surf[0].get_width() > self.target:
+            mult = surf[0].get_width() / self.target
+            return (pg.transform.smoothscale(surf[0], (self.target, surf[0].get_height())), pg.transform.smoothscale(surf[1], (self.target+12/mult, surf[1].get_height())))
+        else:
+            return surf
+
+def squish_size_helper(size, amount):
+    return (size[0]*(1+amount/2), size[1]*(1-amount/2))
+def squish_helper(surf, amount):
+    return pg.transform.smoothscale_by(surf, (1+amount/2, 1-amount/2))
+class SquishFilter(TextFilter):
+    def __init__(self, main=True, pre=False, post=False, shadow=2, amount=0):
+        self.amount = amount
+        super().__init__(main, pre, post, shadow)
+    def filter(self, text, font, surf, point, alpha):
+        if self.amount == 0:
+            return surf
+        else:
+            return (squish_helper(surf[0], self.amount), squish_helper(surf[1], self.amount))
 
 def getWeather():
     global loadingstage
@@ -488,6 +648,7 @@ def getWeather():
         loadingtasks.remove("Retrieving current conditions...")
     th.Thread(target=getcc).start()
     
+    global stream
     
     global travelweathers
     global travelnames
@@ -537,7 +698,10 @@ def getWeather():
                 continue
             if os.path.isdir(os.path.join(icdir,image)):
                 continue
-            icss[image] = pg.image.load(os.path.join(icdir,image))
+            try:
+                icss[image] = pg.image.load(os.path.join(icdir,image))
+            except:
+                pass
             print(image)
     
         global bottomtomorrowm
@@ -549,13 +713,13 @@ def getWeather():
                 try:
                     weathericons[i] = pg.transform.smoothscale(icss[str(weather3["daypart"][0]["iconCode"][i])+str(weather3["daypart"][0]["dayOrNight"][i]).lower()+".png"], (128, 128))
                     if iconpack != "":
-                        weathershadows[i] = turnintoashadow(weathericons[i])
+                        weathershadows[i] = turnintoashadow_delicate(weathericons[i])
                 except:
                     print(f'error on loading icon {weather3["daypart"][0]["iconCode"][i]}{weather3["daypart"][0]["dayOrNight"][0+bottomtomorrowm].lower()}')
             else:
                 weathericons[i] = pg.transform.scale(icss[str(weather3["daypart"][0]["iconCode"][i])+str(weather3["daypart"][0]["dayOrNight"][i]).lower()+".png"], (128, 128))
                 if iconpack != "":
-                    weathershadows[i] = turnintoashadow(weathericons[i])
+                    weathershadows[i] = turnintoashadow_delicate(weathericons[i])
             print(f'icon added: {weather3["daypart"][0]["iconCode"][i]}{weather3["daypart"][0]["dayOrNight"][i].lower()}.png')
         
         #load hourly icons
@@ -575,7 +739,7 @@ def getWeather():
         else:
             weathericonbig = pg.transform.scale(icss[str(weather3["daypart"][0]["iconCode"][0+bottomtomorrowm])+str(weather3["daypart"][0]["dayOrNight"][0+bottomtomorrowm]).lower()+".png"], (192, 192))
         if iconpack != "":
-            weathershadowbig = turnintoashadow(weathericonbig)
+            weathershadowbig = turnintoashadow_delicate(weathericonbig)
         loadingtasks.remove("Loading icons...")
     
     def getef():
@@ -674,7 +838,7 @@ def getWeather():
         global timestam
 
         #osmtiles = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-        osmtiles = "https://api.mapbox.com/styles/v1/goldbblazez/ckgc8lzdz4lzh19qt7q9wbbr9/tiles/256/{z}/{x}/{y}?access_token=" + mapkey
+        osmtiles = "https://api.mapbox.com/styles/v1/lewolfyt/cm8m4n5kt01if01s502hmatep/tiles/256/{z}/{x}/{y}?access_token=" + mapkey
         twctiles_heat = "https://api.weather.com/v3/TileServer/tile/twcRadarMosaic?ts={ts}&xyz={x}:{y}:{z}&apiKey=" + apikey
         # twctiles_precip = "https://api.weather.com/v3/TileServer/tile/precip24hrFcst?ts={ts}&fts={fts}&xyz={x}:{y}:{z}&apiKey=" + apikey
         twch_temp = [[[] for _ in range(tile_amounts)] for _ in range(abs(tilestart.x - tileend.x))]
@@ -694,7 +858,7 @@ def getWeather():
                     url = osmtiles.format(z=zoom, x=tilesneededx[i], y=tilesneededy[j])
                     
                     if not os.path.exists(os.path.join(realcache, f"{zoom}_{tilesneededx[i]}_{tilesneededy[j]}.png")):
-                        ee = r.get(url, headers=rheaders).content
+                        ee = r.get(url, headers=rheaders_maps).content
                         mappy_temp[i].append(pg.image.load(BytesIO(ee)))
                         with open(os.path.join(realcache, f"{zoom}_{tilesneededx[i]}_{tilesneededy[j]}.png"), "wb") as ff:
                             ff.write(ee)
@@ -713,12 +877,12 @@ def getWeather():
                 for i in range(abs(tilestart.x - tileend.x)):
                     for j in range(abs(tilestart.y - tileend.y)):
                         base1 = ppa["seriesInfo"]["twcRadarMosaic"]["series"]
-                        ht = twctiles_heat.format(ts=base1[4-k]["ts"], z=zoom, x=tilesneededx[i], y=tilesneededy[j])
+                        ht = twctiles_heat.format(ts=base1[tile_amounts-1-k]["ts"], z=zoom, x=tilesneededx[i], y=tilesneededy[j])
                         
                         trying = True
                         while trying:
                             try:
-                                eh = r.get(ht, headers=rheaders).content
+                                eh = r.get(ht, headers=rheaders_maps).content
                                 trying = False
                             except:
                                 pass
@@ -800,15 +964,20 @@ def getWeather():
         global logosurf
         logosurf = pg.image.load(partnerlogo)
         loadingtasks.remove("Loading your logo...")
-    
-    while len(loadingtasks) > 0:
+    global skipflag
+    while (len(loadingtasks) > 0) and not skipflag:
         pass
     
-    global stream
+    if writer:
+        set_post_mix(postmix)
+
     if stream:
         global realstream
         realstream = cv2.VideoCapture(stream)
         
+        vv = th.Thread(target=reader_updater)
+        vv.daemon = True
+        vv.start()
         
         if miniplayer:
             #get stream dimensions and make a gradient for the miniplayer
@@ -1056,14 +1225,16 @@ rrtt.daemon = True
 
 print("generating gradients")
 
-gradient_c = ((0, 80, 255), (0, 180,  255))
+gradient_c = ((0, 80, 255), (0, 180, 255))
 gradient_redc = ((255, 0, 0), (255, 90, 0))
+sidebar_c = ((0, 80, 255), (0, 180, 255))
+sidebar_redc = ((255, 0, 0), (255, 90, 0))
 topgradient_c = ((34, 139, 34), (124, 252, 0))
 topgradienthealth_c = ((32, 178, 170), (0, 255, 255))
 topgradientcustom_c = ((32, 32, 32), (170, 170, 170))
 topgradientred_c = ((34, 139, 34), (124, 252, 0))
 bottomgradient_c = ((240, 128, 128), (178, 34, 34))
-bottomgradient_redc = ((0, 80, 255), (0, 180,  255))
+bottomgradient_redc = ((0, 80, 255), (0, 180, 255))
 ldlgradient_c = ((240, 128, 128), (178, 34, 34))
 chartbg_c = ((0, 140, 255), (0, 40, 255))
 hourlybg_c = ((0, 140, 255), (0, 40, 255))
@@ -1071,7 +1242,7 @@ weekbg_c = ((0, 140, 255), (0, 40, 255))
 weekbg_darkc = ((140, 140, 140), (40, 40, 40))
 weekbg_endc = ((255, 220, 0), (220, 170, 0))
 weekbg_dendc = ((215, 105, 0), (215, 85, 0))
-nextbg_c = ((0, 80, 255), (0, 180,  255))
+nextbg_c = ((0, 80, 255), (0, 180, 255))
 
 # gradient_c = ((136,231,136), (46,111,64))
 # gradient_redc = ((255, 0, 0), (255, 90, 0))
@@ -1127,6 +1298,7 @@ customtickers = []
 customtickers_m = []
 customslides = []
 
+@profiling_sect("time_math")
 def get_lang_custom(dat):
     if locl in dat:
         return dat[locl]
@@ -1173,6 +1345,9 @@ if getattr(varr, "color_replace", None) != None:
 gradient = generateGradient(*gradient_c)
 gradientred = generateGradient(*gradient_redc)
 
+sidebar = generateGradient(*sidebar_c, w=350)
+sidebarred = generateGradient(*sidebar_redc, w=350)
+
 topgradient = generateGradientHoriz(*topgradient_c, h=64)
 topgradienthealth = generateGradientHoriz(*topgradienthealth_c, h=64)
 topgradientcustom = generateGradientHoriz(*topgradientcustom_c, h=64)
@@ -1182,8 +1357,9 @@ bottomgradient = generateGradientHoriz(*bottomgradient_c, h=64)
 bottomgradientred = generateGradientHoriz(*bottomgradient_redc, h=64)
 ldlgradient = generateGradient(*ldlgradient_c, h=128)
 
-topshadow = generateGradient((127, 127, 127), (255, 255, 255), a1=127, a2=0, h=16)
-bottomshadow = generateGradient((255, 255, 255), (127, 127, 127), a1=127, a2=0, h=16)
+topshadow = generateGradient((127, 127, 127), (255, 255, 255), a1=255, a2=255, h=16)
+bottomshadow = generateGradient((255, 255, 255), (127, 127, 127), a1=255, a2=255, h=16)
+sideshadow = generateGradientHoriz((255, 255, 255), (160, 160, 160), a1=255, a2=255, w=12)
 
 weekbg = generateGradient(*chartbg_c, w=140, h=556)
 weekbg.blit(generateGradient(*reversed(chartbg_c), w=130, h=546), (5, 5))
@@ -1258,19 +1434,37 @@ print("weather thread started")
 rrt.start()
 rrtt.start()
 print("timers started (we changed the order of these functions)")
+global rawframe
+rawframe = np.zeros((1, 1, 3), np.uint8)
+def reader_updater():
+    global realstream
+    global rawframe
+    print(realstream.read())
+    print("READ READ READ READ READ READ READ")
+    fff = getattr(varr, "forcestreamfps", False)
+    frams = realstream.get(cv2.CAP_PROP_FPS)
+    while True:
+        rt, rawframe = realstream.read()
+        if fff:
+            time.sleep(1/frams)
 
+@profiling_sect("time_math")
 def lerp(a, b, n):
     return a*(1-n) + b*n
 
+@profiling_sect("time_math")
 def lerp2(a, b, n):
     t = 1 - (1 - n) * (1 - n)
     return a*(1-t) + b*t
 
+@profiling_sect("time_blits")
 def alphablit(surf, alpha, coord):
     transparent = pg.surface.Surface((surf.get_width(), surf.get_height())).convert_alpha()
     transparent.fill((255, 255, 255, alpha))
     transparent.blit(surf, (0, 0), special_flags=pg.BLEND_RGBA_MULT)
     window.blit(transparent, coord)
+
+@profiling_sect("time_blits")
 def alphablit2(surf, alpha, coord, dest):
     transparent = pg.surface.Surface((surf.get_width(), surf.get_height())).convert_alpha()
     transparent.fill((255, 255, 255, alpha))
@@ -1278,19 +1472,43 @@ def alphablit2(surf, alpha, coord, dest):
     dest.blit(transparent, coord)
     return transparent
 
+@profiling_sect("time_math")
 def expandSurface(surf, expansion):
     newsurf = pg.surface.Surface((surf.get_width() + expansion*2, surf.get_height() + expansion*2))
     newsurf.fill((255, 255, 255, 0))
     newsurf.blit(surf, (expansion, expansion))
     return newsurf
 
+buffer = pg.Surface((140, 276))
+pg.draw.rect(buffer, (127, 127, 127, 127), pg.rect.Rect(0, 0, 140, 276))
+buffer = blur(expandSurface(buffer, 6), 4)
+cache["7daybuffer"] = buffer
+
+buffer = pg.Surface((994+screendiff, 92))
+pg.draw.rect(buffer, (127, 127, 127, 127), pg.rect.Rect(0, 0, 994+screendiff, 92))
+buffer = blur(expandSurface(buffer, 6), 4)
+cache["hourlybuffer"] = buffer
+
+buffer = pg.Surface((350-12, 92))
+pg.draw.rect(buffer, (127, 127, 127, 127), pg.rect.Rect(0, 0, 350-12, 92))
+buffer = blur(expandSurface(buffer, 6), 4)
+cache["hourlysidebar"] = buffer
+
+@profiling_sect("time_math")
 def expandSurfaceAlpha(surf, expansion):
     newsurf = pg.surface.Surface((surf.get_width() + expansion*2, surf.get_height() + expansion*2)).convert_alpha()
     newsurf.fill((255, 255, 255, 0))
     newsurf.blit(surf, (expansion, expansion))
     return newsurf
 
-def drawshadowtext(text, size, x, y, offset, shadow=127, totala=255, wind=window, filters: list[TextFilter]=None):
+@profiling_sect("time_math")
+def expandSurfaceDelicate(surf, expansion):
+    newsurf = pg.surface.Surface((surf.get_width() + expansion*2, surf.get_height() + expansion*2), pg.SRCALPHA)
+    newsurf.blit(surf, (expansion, expansion))
+    return newsurf
+
+@profiling_sect("time_ui")
+def drawshadowtext(text, size, x, y, offset, shadow=127, totala=255, wind=window, filters=None):
     text = str(text)
     usecache = True
     if text in textcache:
@@ -1333,10 +1551,12 @@ def drawshadowtext(text, size, x, y, offset, shadow=127, totala=255, wind=window
     if filters != None:
         for filter in filters:
             if filter.main:
-                if filter.shadow:
-                    textsh = filter.filter(text, size, textsh, (x, y), totala)
-                else:
+                if filter.shadow == 0:
                     textn = filter.filter(text, size, textn, (x, y), totala)
+                elif filter.shadow == 1:
+                    textsh = filter.filter(text, size, textsh, (x, y), totala)
+                elif filter.shadow == 2:
+                    textn, textsh = filter.filter(text, size, (textn, textsh), (x, y), totala)
     if totala != 255:
         wind.blit(textsh, (x+offset, y+offset), special_flags=pg.BLEND_RGBA_MULT)
         alphablit2(textn, totala, (x, y), wind)
@@ -1346,9 +1566,10 @@ def drawshadowtext(text, size, x, y, offset, shadow=127, totala=255, wind=window
     if filters != None:
         for filter in filters:
             if filter.post:
-                filter.filter_post(text, size, (textsh if filter.shadow else textn), (x, y), totala)
+                filter.filter_post(text, size, (textn, textsh, (textn, textsh))[filter.shadow], (x, y), totala)
     return textbland
 
+@profiling_sect("time_ui")
 def drawshadowtextroto(text, size, x, y, angle, offset, shadow=127, totala=255, rx=0, ry=0, wind=window):
     text = str(text)
     usecache = True
@@ -1376,7 +1597,6 @@ def drawshadowtextroto(text, size, x, y, angle, offset, shadow=127, totala=255, 
             buf.fill((255, 255, 255))
             alphablit2(buf, 255-totala, (0, 0), textsh)
         
-        
         if totala == 255:
             if not text in textcache:
                 textcache[text] = {}
@@ -1398,7 +1618,8 @@ def drawshadowtextroto(text, size, x, y, angle, offset, shadow=127, totala=255, 
         wind.blit(rotn, (x+rx*rotsh.get_width(), y-ry*rotsh.get_height()))
     return textbland
 
-def drawshadowtemp(temp, size: pg.font.Font, x, y, offset, shadow=127):
+@profiling_sect("time_ui")
+def drawshadowtemp(temp, size, x, y, offset, shadow=127):
     temp = str(temp)
     usecache = True
     if temp in tempcache:
@@ -1425,26 +1646,20 @@ def drawshadowtemp(temp, size: pg.font.Font, x, y, offset, shadow=127):
     window.blit(textsh, (x+offset, y+offset), special_flags=pg.BLEND_RGBA_MULT)
     window.blit(textn, (x, y))
     return textn
-def drawshadowcrunch(text, size: pg.font.Font, x, y, offset, targetWidth, shadow=127):
-    textn = size.render(text, 1, (255, 255, 255, 255))
-    textsh = size.render(text, 1, (shadow/1.5, shadow/1.5, shadow/1.5, shadow))
-    if size.size(str(text))[0] > targetWidth:
-        textn = pg.transform.smoothscale(textn, (targetWidth, size.size(text)[1]))
-        textsh = pg.transform.smoothscale(textsh, (targetWidth, size.size(text)[1]))
-    textsh = blur(expandSurface(textsh, 6), 4)
-    window.blit(textsh, (x+offset, y+offset), special_flags=pg.BLEND_RGBA_MULT)
-    window.blit(textn, (x, y))
-    return textn
+def drawshadowcrunch(text, size, x, y, offset, targetWidth, shadow=127, totala=255, wind = window, filters=[]):
+    return drawshadowtext(text, size, x, y, offset, shadow, totala, wind, [CrunchFilter(target=targetWidth)] + filters)
 
+@profiling_sect("time_math")
 def mapnum(minv, maxv, nminv, nmaxv, val):
     firstspan = maxv-minv
     secondspan = nmaxv-nminv
     valsc = val-minv
     return nminv + ((valsc / firstspan) * secondspan)
 
-def drawshadowtextcol(text, col, size, x, y, offset, shadow=127, totala=255, wind : pg.Surface = window, filters: list[TextFilter]=[]):
+def drawshadowtextcol(text, col, size, x, y, offset, shadow=127, totala=255, wind = window, filters=[]):
     return drawshadowtext(text, size, x, y, offset, shadow, totala, wind, [GeneralColorFilter(color=col)] + filters)
 
+@profiling_sect("time_ui")
 def drawshadowcrunchcol(text, col, size, x, y, offset, targetWidth, shadow=127):
     text = str(text)
     textn = size.render(text, 1, col)
@@ -1457,6 +1672,7 @@ def drawshadowcrunchcol(text, col, size, x, y, offset, targetWidth, shadow=127):
     window.blit(textn, (x, y))
     return size.render(text, 1, (255, 255, 255, 255))
 
+@profiling_sect("time_math")
 def getcrunch(text, size, targetWidth, targetHeight):
     text = str(text)
     textn = size.render(text, 1, (255, 255, 255))
@@ -1469,6 +1685,13 @@ def getcrunch(text, size, targetWidth, targetHeight):
         crunchh = targetHeight/textsh.get_height()
     return crunchw, crunchh, textn.get_width(), textsh.get_height()
 
+def safedivide(x, y):
+    if y == 0:
+        return 0
+    else:
+        return x/y
+
+@profiling_sect("time_ui")
 def drawshadowbigcrunch(text, col, size, x, y, offset, targetWidth, targetHeight, shadow=127):
     text = str(text)
     usecache = True
@@ -1515,6 +1738,7 @@ def drawshadowbigcrunch(text, col, size, x, y, offset, targetWidth, targetHeight
     window.blit(textn, (x, y))
     return textbland
 
+@profiling_sect("time_ui")
 def drawshadowtempcol(temp, col, size: pg.font.Font, x, y, offset, shadow=127):
     temp = str(temp)
     usecache = True
@@ -1554,6 +1778,7 @@ def drawshadowtempcol(temp, col, size: pg.font.Font, x, y, offset, shadow=127):
     window.blit(textn, (x, y))
     return textn
 
+@profiling_sect("time_math")
 def parsetimelength(timestamp):
     time = timestamp.split("/")[1]
     #2DT6H for example
@@ -1566,15 +1791,19 @@ def parsetimelength(timestamp):
     finalhours += days*24
     finalhours += secs
     return finalhours
+
+@profiling_sect("time_math")
 def parseRawTimeStamp(timestamp):
     time = dt.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S+00:00/"+timestamp.split("/")[1])
     time = time - dt.timedelta(hours=4)
     periodtime = parsetimelength(timestamp)
     return (time, time + dt.timedelta(hours=periodtime), periodtime)
 
+@profiling_sect("time_math")
 def nonezero(val):
     return 0 if val == None else val
 
+@profiling_sect("time_math")
 def getValuesHourly(values):
     #we need to get 24 hours of values
     
@@ -1607,6 +1836,7 @@ def getValuesHourly(values):
             vals.append(vals[-1])
     return vals[offset:]
 
+@profiling_sect("time_ui")
 def makehourlygraph():
     w = 984+screendiff
     h = 546
@@ -1644,11 +1874,14 @@ def makehourlygraph():
     
     return surf, surf2, {"mintemp": mintemp, "maxtemp": maxtemp, "medtemp": medtemp}
 
+@profiling_sect("time_math")
 def trail(num):
     ln = str(num)
     if len(ln) < 2:
         return "0" + ln
     return ln
+
+eighteen_coconutties = pg.Surface((screenwidth, 768), pg.SRCALPHA)
 
 def domusic(warn=False):
     if not sound:
@@ -1679,6 +1912,7 @@ def domusic(warn=False):
                                 music.fadeout(1000)
                                 musicc = pg.mixer.Sound(os.path.join(playmusic, rd.choice(stripdss(os.listdir(playmusic)))))
                                 music = musicc.play(fade_ms=1000)
+
                         else:
                             if music == None:
                                 musicc = pg.mixer.Sound(os.path.join(playmusic, rd.choice(stripdss(os.listdir(playmusic)))))
@@ -1716,32 +1950,45 @@ def domusic(warn=False):
             daytheme.fadeout(1000)
             nighttheme.fadeout(1000)
 
-def formatMetric(metric):
-    if metric["value"] == None:
-        return 404
-    if metric["unitCode"] == "wmoUnit:degC":
-        return metric["value"]*1.8+32
-    elif metric["unitCode"] == "wmoUnit:km_h-1":
-        return metric["value"]/1.609
-    elif metric["unitCode"] == "wmoUnit:Pa":
-        return metric["value"]/3386
-    else:
-        return metric["value"]
-
-def handleNone(val):
-    return val if val != None else 0
-
+@profiling_sect("time_math")
 def roundd(val, precision=0):
     if val in [None, "Error"]:
         return "Error"
     else:
         return round(val, precision)
 
+@profiling_sect("time_math")
 def stripdss(array: list):
     newar = array
     if ".DS_Store" in newar:
         newar.remove(".DS_Store")
     return newar
+
+def imagethread():
+    if writer:
+        while True:
+            eventt.wait()
+            if not stinky:
+                #winarray = pg.surfarray.array3d(window)
+                #winarray = cv2.cvtColor(winarray, cv2.COLOR_RGB2BGR)
+                #winarray = cv2.transpose(winarray)
+                
+                winarray = pg.image.tobytes(window, "RGB")
+            #global realwriter
+            #realwriter.stdin.write(winarray.tobytes())
+            
+                #pipe = os.open("lsvid", os.O_WRONLY)
+                #chsize = 16384
+                #dat = bytes(winarray)
+                #for i in range(0, len(dat), chsize):
+                #    # Write to named pipe as writing to a file (but write the data in small chunks).
+                #    os.write(pipe, dat[i:chsize+i])
+                #os.close(pipe)
+                
+                global realwriter
+                #realwriter.stdin.write(bytes(winarray))
+                realwriter.stdin.write(winarray)
+            eventt.clear()
 
 print("pumping events")
 pg.event.pump()
@@ -1769,10 +2016,15 @@ def main():
     shuffle = 0
     redded = False
     changetime = 60 * 15
+    baselinetime = 60 * 4
     justswitched = True
     transitiontime = 0
     ticker = 0
     tickertimer = 60 * 4
+    tickerbase = 60 * 4
+    overdrawtime = 0
+    
+    global eighteen_coconutties
     
     alerttimeout = 60 * 10
     adindex = -1
@@ -1784,6 +2036,52 @@ def main():
     
     showfps = False
     
+    sidebarscroll = 0
+    sidebarnamescroll = 0
+    sidebartimer = 0
+    sidebarsection = 0
+    sidebarstart = 0
+    sidebaractive = False
+    
+    justticked = False
+    
+    def fader():
+        nonlocal baselinetime
+        if justswitched:
+            baselinetime = changetime*1
+            return 1
+        if changetime < 15:
+            return ((15-changetime)/15)**2
+        if changetime > (baselinetime-15):
+            return ((changetime - (baselinetime-15))/15)**2
+        return 0
+    def tickerfader():
+        nonlocal tickerbase
+        if justticked:
+            tickerbase = tickertimer*1
+        if tickertimer > (tickerbase-15):
+            return ((tickertimer - (tickerbase-15))/15)**2
+        if tickertimer < 15:
+            return ((15-tickertimer)/15)**2
+        return 0
+    def overdraw():
+        if overdrawtime == 0:
+            return
+        fade = 1-(overdrawtime/15)**2
+        if not usebg:
+            window.blit(gradient if not redmode else gradientred, (-fade*screenwidth, 0))
+        else:
+            if smoothsc:
+                window.blit(pg.transform.smoothscale(bgimage if not redmode else bgimager, (screenwidth, 768)), (-fade*screenwidth, 0))
+            else:
+                window.blit(pg.transform.scale(bgimage if not redmode else bgimager, (screenwidth, 768)), (-fade*screenwidth, 0))
+        window.blit(topgradient if not redmode else topgradientred, (0, -fade*64))
+        window.blit(topshadow, (0, 64-fade*64), special_flags=pg.BLEND_RGBA_MULT)
+        
+        realbotg = (bottomgradient if not redmode else bottomgradientred)
+        window.blit(realbotg, (0, 768-realbotg.get_height()+fade*64))
+        window.blit(bottomshadow, (0, 768-realbotg.get_height()-bottomshadow.get_height()+64*fade), special_flags=pg.BLEND_RGBA_MULT)
+    
     totalseg = 1#2 + (len(customslides) > 0)
     
     currentscene = 0
@@ -1791,7 +2089,10 @@ def main():
     
     rotatee = 0
     
+    cflag = False
     lsd = 0
+    
+    schedule_fired = False #this variable exists so that we don't accidentally start the presentation twice in a minute, though that would only be possible if the slide time was really short
     
     sectionscroll = 0
     
@@ -1800,8 +2101,15 @@ def main():
     
     #currently:
     #hourlygraph
-    
-    def namer(name):
+    @profiling_sect("time_math")
+    def namer(name, preview=False):
+        if preview:
+            if "$2" in name or "$3" in name:
+                return ""
+            if compact:
+                return name.replace("$1", "36h")
+            else:
+                return name.replace("$1", "36-Hour")
         if compact:
             return name.replace("$", "")
         else:
@@ -1830,7 +2138,11 @@ def main():
     except:
         pass
     while working:
+        justticked = False
+        global stream
+        global rawframe
         delta = clock.tick(60) / 1000
+        profst = time.perf_counter()
         for event in pg.event.get():
             if event.type == pg.QUIT:
                 working = False
@@ -1847,9 +2159,7 @@ def main():
                         nightv += 1
                         if nightv > 4:
                             nightv = 0
-                        alertshow += 1
-                        if alertshow > len(alerts)-1:
-                            alertshow = 0
+                        
                         ticker += 1
                     elif event.button == pg.BUTTON_RIGHT:
                         bottomtomorrow = 0
@@ -1878,6 +2188,8 @@ def main():
                     currentscene = -1
                 elif event.key == pg.K_3:
                     currentscene = 1
+                elif event.key == pg.key.key_code("c"):
+                    cflag = True
                 elif event.key == pg.key.key_code("f"):
                     showfps = not showfps
                     overridetime = 5 * 60
@@ -1890,6 +2202,11 @@ def main():
                     redded = not redded
                     overridetime = 5 * 60
                     name = "Toggled red mode test!"
+                elif event.key == pg.key.key_code("s"):
+                    global skipflag
+                    skipflag = True
+                elif event.key == pg.key.key_code("x"):
+                    raise InterruptedError("This is a test exception!")
                 elif event.key == pg.key.key_code("e"):
                     try:
                         os.mkdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "export"))
@@ -1914,17 +2231,47 @@ def main():
                     
                     overridetime = 5 * 60
                     name = "Exported gradients successfully!"
+                elif event.key == pg.key.key_code("b"):
+                    sidebaractive = True
+                    sidebartimer = 0
+                    sidebarsection = 0
+                    sidebarstart = 0
+                elif event.key == pg.key.key_code("u"):
+                    currentscene = 0
+                    currentsection = 0
+                    view = 0
+                    changetime = 60*4
+                    eighteen_coconutties = window.copy()
         if not working:
             break
         perfit = (True if not performance else justswitched)
-        if perfit:
+        fading = fader()
+        cuefade = 0
+        if currentsection == 0 and view == 0 and schedule_active and changetime >= 60*3+45 and not loading:
+            cuefade = ((changetime-60*3-45)/15)**2
+        if perfit and not streambg:
+            if view == 0 and schedule_active:
+                window.blit(eighteen_coconutties, (0, 0))
             if not usebg:
-                window.blit(gradient if not redmode else gradientred, (0, 0))
+                window.blit(gradient if not redmode else gradientred, (-cuefade*screenwidth, 0))
             else:
                 if smoothsc:
-                    window.blit(pg.transform.smoothscale(bgimage if not redmode else bgimager, (screenwidth, 768)), (0, 0))
+                    window.blit(pg.transform.smoothscale(bgimage if not redmode else bgimager, (screenwidth, 768)), (-cuefade*screenwidth, 0))
                 else:
-                    window.blit(pg.transform.scale(bgimage if not redmode else bgimager, (screenwidth, 768)), (0, 0))
+                    window.blit(pg.transform.scale(bgimage if not redmode else bgimager, (screenwidth, 768)), (-cuefade*screenwidth, 0))
+        if streambg:
+            if stream:
+                st = profiling_start()
+                global rawframe
+                frame = cv2.cvtColor(rawframe, cv2.COLOR_BGR2RGB)
+                #frame = cv2.flip(frame, 1)
+                frame = cv2.transpose(frame)
+                frame = cv2.resize(frame, (768, screenwidth))
+                framesurf = pg.surfarray.make_surface(frame)
+                window.blit(framesurf, (0, 0))
+                profiling_end(st, "time_stream")
+            else:
+                window.fill(maskcolor)
         
         for action in actions["pre"]:
             exec(action)
@@ -1949,26 +2296,26 @@ def main():
             obstimeshort = splubby(obstime.strftime("%I:%M %p"))
             currenttime = splubby(now.strftime("%I:%M:%S %p"))
             currentdate = now.strftime("%a %b ") + splubby(now.strftime("%d"))
-            window.fill(maskcolor)
             
-            global stream
             if stream:
+                st = profiling_start()
+                window.blit(gradient, (0, 0))
                 global realstream
-                rt, frame = realstream.read()
+                
                 
                 stretchmode = getattr(varr, "stretchmode", "stretch")
                 height = getattr(varr, "streamheight", 0)
                 streamy = getattr(varr, "streamy", 0)
                 
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame = cv2.cvtColor(rawframe, cv2.COLOR_BGR2RGB)
                 #frame = cv2.flip(frame, 1)
                 frame = cv2.transpose(frame)
                 
                 if stretchmode == "stretch":
                     if height == 0:
-                        frame = cv2.resize(frame, (screenwidth, 768))
+                        frame = cv2.resize(frame, (768, screenwidth))
                     else:
-                        frame = cv2.resize(frame, (screenwidth, height))
+                        frame = cv2.resize(frame, (height, screenwidth))
                 elif stretchmode == "fit":
                     if height == 0:
                         #fullscreen, but keep aspect ratio
@@ -1989,8 +2336,101 @@ def main():
                 #    framesurf = pg.transform.smoothscale(framesurf, (screenwidth, 768))
                 #else:
                 #    framesurf = pg.transform.scale(framesurf, (screenwidth, 768))
+                xx = screenwidth/2 - framesurf.get_width()/2
+                offset = sidebarscroll/2
+                if (screenwidth/2 - framesurf.get_width()/2 + offset) < 0:
+                    xx = 0
+                else:
+                    xx = screenwidth/2 - framesurf.get_width()/2 + offset
+                window.blit(framesurf, (xx, streamy))
+                profiling_end(st, "time_stream")
+            else:
+                window.fill(maskcolor)
+            
+            overdrawtime -= delta * 60
+            overdrawtime = max(overdrawtime, 0)
+            
+            if sidebarscroll != 0:
+                st = profiling_start()
+                window.blit(sidebarred if redmode else sidebar, (screenwidth+sidebarscroll, 0))
+                window.blit(sideshadow, (screenwidth+sidebarscroll-12, 0), special_flags=pg.BLEND_RGB_MULT)
+                drawshadowtext(lang["yourweather"], smallmedfont, screenwidth+sidebarscroll+5, 5, 5)
+                if sidebarsection == 0:
+                    chosenfont = medfont
+                    wrap = False
+                    if chosenfont.size(realstationname)[0] > 340:
+                        chosenfont = smallmedfont
+                        if chosenfont.size(realstationname)[0] > 340:
+                            chosenfont = smallishfont
+                        else:
+                            wrap = True
+                    
+                    if wrap:
+                        drawshadowtext("\n".join(wraptext(realstationname, pg.Rect(0, 0, 350, 768), chosenfont)), chosenfont, screenwidth + sidebarnamescroll + 5, 40, 5)
+                    else:
+                        drawshadowtext(realstationname, chosenfont, screenwidth + sidebarnamescroll + 5, 40, 5)
+                elif sidebarsection == 1:
+                    vv = drawshadowtemp(f"{round(weather2['temperature'])}", hugefont, screenwidth + sidebarnamescroll + 5, 40, 5, 196)
+                    drawshadowtext(f"°{t}", bigfont, screenwidth + sidebarnamescroll + vv.get_width() + 5, 50, 4, 196)
+                    drawshadowtext(weather2["wxPhraseLong"], smallishfont, screenwidth + sidebarnamescroll + 5, 190, 5)
+                    drawshadowtext(f"{lang['wind']}: {lang['calm'] if weather2['windDirectionCardinal'] != 'CALM' else '{} @ {} {}MPH'.format(lang['windDirectionCardinal'], weather2['windSpeed'], kmpb)}\n{lang['humid']}: {weather2['relativeHumidity']}%\n{lang['precipshort']}: {weather2['precip24Hour']}{prec_c}\n{lang['visib']}: {weather2['visibility']}{visi_c}\n{lang['feels']}: {round(weather2['temperatureFeelsLike'])}°{t}\n{lang['pressure']}: {weather2['pressureAltimeter']}{pres_s}", smallishfont, screenwidth + sidebarnamescroll + 5, 225, 5)
+                elif sidebarsection == 2:
+                    drawshadowtext(lang['viewnames'][4], smallmedfont, screenwidth + sidebarnamescroll + 5, 60, 5)
+                    for i in range(10):
+                        now = dt.datetime.now() + dt.timedelta(hours=i)
+                        drawshadowtext(splubby(now.strftime("%I%p")), smallfont, screenwidth + sidebarnamescroll + 5, 132+50*i, 5)
+                        
+                        drawshadowtemp(weatherraw["temperature"][i], smallmedfont, screenwidth + sidebarnamescroll + 70, 120+50*i, 5)
+                        drawshadowtext(weatherraw["wxPhraseShort"][i], smallfont, screenwidth + sidebarnamescroll + 140, 122+50*i, 5)
+                        #drawshadowtempcol(weatherraw["temperatureFeelsLike"][i], (255, 0, 0) if weatherraw["temperatureFeelsLike"][i]>weatherraw["temperature"][i] else ((255, 255, 255) if weatherraw["temperatureFeelsLike"][i]==weatherraw["temperature"][i] else (0, 255, 255)), smallishfont, screenwidth + sidebarnamescroll + 140, 140+50*i, 5)
+                        drawshadowtext((str(weatherraw["windSpeed"][i]) + kmp + "mph ") + weatherraw["windDirectionCardinal"][i], smallfont, screenwidth + sidebarnamescroll + 140, 143+50*i, 5)
+                        # drawshadowtext(lang["wind"] + ":", smallmedfont, 300+15+92+5, 90+96*i+40 + scr, 5)
+                        # drawshadowtext((str(weatherraw["windSpeed"][i]) + kmp + "mph ") + weatherraw["windDirectionCardinal"][i], smallmedfont, 300+15+92+5, 90+92/2+96*i+40 + scr, 5)
+                        # drawshadowtextcol(str(weatherraw["precipChance"][i]) + "%", (0, 255, 255), smallmedfont, 600+15+92+5, 90+96*i+40 + scr, 5)
+                        # drawshadowtextcol(str(weatherraw["relativeHumidity"][i]) + "%", (255, 127, 0), smallmedfont, 600+15+92+5, 90+92/2+96*i+40 + scr, 5)
+                        # drawshadowtextcol(lang["feels"] + ":", (255, 0, 0), smallmedfont, 750+15+92+5, 90+96*i+40 + scr, 5)
+                        # drawshadowtextcol(str(weatherraw["temperatureFeelsLike"][i]) + "°" + t, (255, 0, 0), smallmedfont, 750+15+92+5, 90+92/2+96*i+40 + scr, 5)
+                        
+                elif sidebarsection == 3:
+                    drawshadowtext(lang['viewnames'][10], smallmedfont, screenwidth + sidebarnamescroll + 5, 60, 5)
+                    map_left = round(mappy.get_width()/2-175)
+                    map_top = round(mappy.get_height()/2-250)
+                    map_area = pg.Rect(map_left, map_top, 350, 500)
+                    window.blit(mappy, (screenwidth + sidebarnamescroll, 768-628), map_area)
+                    if sidebartimer < 2:
+                        mappyind = round(sidebartimer*10)
+                    elif sidebartimer < 3:
+                        mappyind = 19
+                    elif sidebartimer < 5:
+                        mappyind = round((sidebartimer-3)*10)
+                    else:
+                        mappyind = 19
+                    if mappyind > 19:
+                        mappyind = 19
+                    window.blit(mappy_heat[mappyind], (screenwidth + sidebarnamescroll, 768-628), map_area)
+                    drawshadowtext(timestam[0][mappyind], smallishfont, screenwidth + sidebarnamescroll + 5, 768-628, 5)
 
-                window.blit(framesurf, (screenwidth/2 - framesurf.get_width()/2, streamy))
+                profiling_end(st, "time_ui")
+
+            if sidebaractive:
+                sidebarscroll = lerp(sidebarscroll, -350, 0.1)
+                if sidebarsection != 0:
+                    sidebarstart = lerp(sidebarstart, 1, 0.1)
+                sidebartimer += delta
+                if sidebartimer < 1:
+                    sidebarnamescroll = lerp(sidebarnamescroll, 0, 0.2)
+                elif sidebartimer < 6:
+                    sidebarnamescroll = lerp(sidebarnamescroll, -350, 0.075)
+                elif sidebartimer > 7:
+                    sidebartimer = 0
+                    sidebarsection += 1
+                    if sidebarsection > 3:
+                        sidebaractive = False
+                else:
+                    sidebarnamescroll = lerp(sidebarnamescroll, 0, 0.2)
+            else:
+                sidebarscroll = lerp(sidebarscroll, 0, 0.1)
+                sidebarnamescroll = lerp(sidebarnamescroll, 0, 0.2)
                 
             window.blit(ldlgradient, (0, 768-ldlgradient.get_height()))
             def four(fourcc):
@@ -2002,10 +2442,11 @@ def main():
                 drawshadowtext(f"FPS: {round(clock.get_fps())}", smallmedfont, 5, 160, 5, 127)
                 drawshadowtext(f"Pixel Format: {four(int(realstream.get(cv2.CAP_PROP_CODEC_PIXEL_FORMAT)))}", smallmedfont, 5, 200, 5, 127)
 
+
             if len(alerts) > 0:
                 if len(alerts) > 1:
                     if alerttimer > 0:
-                        alerttimer -= 1 * delta * 60
+                        alerttimer -= delta * 60
                     else:
                         if performance:
                             alertscroll = screenwidth
@@ -2017,8 +2458,9 @@ def main():
                     alerttimer = 300
                     if showingalert > len(alerts)-1:
                         showingalert = 0
+                drawshadowcrunch(alerts[showingalert]["headlineText"], smallmedfont, 5 + alertscroll, 704-64+5, 5, screenwidth-10, 127)
                 if len(alerts) > 1:
-                    drawshadowcrunchcol(alerts[(showingalert+1) if showingalert != len(alerts)-1 else 0]["headlineText"], (255, 0, 0) if not redmode else (0, 127, 255), smallmedfont, -1019 + alertscroll, 80, 5, 1024-15, 127)
+                    drawshadowcrunch(alerts[(showingalert+1) if showingalert != len(alerts)-1 else 0]["headlineText"], smallmedfont, -screenwidth + 5 + alertscroll, 704-64+5, 5, screenwidth-10, 127)
             else:
                 drawshadowtext(currentdate, smallmedfont, 5, 704-64+5, 5, 127, filters=filters["tickertl"])
                 drawshadowtext(currenttime, smallmedfont, screenwidth - 5 - smallmedfont.size(currenttime)[0], 704-64+5, 5, 127, filters=filters["tickertr"])
@@ -2034,8 +2476,11 @@ def main():
                     tickertimer = 60 * actime
                 else:
                     tickertimer = 60 * 4
+                justticked = True
             else:
                 tickertimer -= 60 * delta
+            
+            tickerf = tickerfader()
             
             tickerright = ""
             if ticker == 0:
@@ -2068,9 +2513,10 @@ def main():
                 exec(customtickers_m[ticker - 6])
             elif ticker == (6 + len(customtickers_m)):
                 tickername = ads[adindex]
+            overdraw()
             if not ((len(customtickers_m) > 0) and (ticker > 5) and (ticker <  (6 + len(customtickers_m)))):
-                drawshadowtext(tickername, smallmedfont, 5, 768-64+5, 5, 127, filters=filters["tickerbl"])
-                drawshadowtext(tickerright, smallmedfont, screenwidth-5-smallmedfont.size(tickerright)[0], 768-64+5, 5, 127, filters=filters["tickerbr"])
+                drawshadowtext(tickername, smallmedfont, 5, 768-64+5+64*tickerf, 5, 127, filters=filters["tickerbl"])
+                drawshadowtext(tickerright, smallmedfont, screenwidth-5-smallmedfont.size(tickerright)[0], 768-64+5+64*tickerf, 5, 127, filters=filters["tickerbr"])
             if ldltop:
                 window.blit(topgradient, (0, 0))
                 if not hideleft:
@@ -2087,6 +2533,57 @@ def main():
             if ldlwatermark:
                 window.blit(watermark, (screenwidth-watermark.get_width()-5, 768-128-watermark.get_height()-5))
             
+            if transitiontime > 0 and not performance:
+                transitiontime -= 1
+            
+            #schedule time!
+            if schedule_active:
+                if schedule_mode == "minutes":
+                    now = dt.datetime.now()
+                    if (now.minute in schedule_times) and not schedule_fired:
+                        #change to normal scene
+                        currentscene = 0
+                        justswitched = True
+                        
+                        if not customtransition:
+                            transitiontime = 60
+                        
+                        schedule_fired = True
+                        eighteen_coconutties = window.copy()
+                    else:
+                        schedule_fired = False
+                elif schedule_mode == "hours":
+                    now = dt.datetime.now()
+                    if (now.hour in schedule_times) and (now.minute == 0) and not schedule_fired:
+                        #change to normal scene
+                        currentscene = 0
+                        justswitched = True
+                        if not customtransition:
+                            transitiontime = 60
+                        schedule_fired = True
+                        eighteen_coconutties = window.copy()
+                    else:
+                        schedule_fired = False
+                elif schedule_mode == "mix":
+                    valid_hours = schedule_times[0]
+                    valid_minutes = schedule_times[1]
+                    now = dt.datetime.now()
+                    if (now.hour in valid_hours) and (now.minute in valid_minutes) and not schedule_fired:
+                        #change to normal scene
+                        currentscene = 0
+                        justswitched = True
+                        if not customtransition:
+                            transitiontime = 60
+                        schedule_fired = True
+                        eighteen_coconutties = window.copy()
+                    else:
+                        schedule_fired = False
+            now = dt.datetime.now()
+            if now.minute in sidebar_times and now.second < 20 and not sidebaractive:
+                sidebaractive = True
+                sidebartimer = 0
+                sidebarsection = 0
+                sidebarstart = 0
         else:
             if not redded:
                 if redmode:
@@ -2131,316 +2628,300 @@ def main():
             
             perfit = (True if not performance else justswitched)
             if view == 0:
-                if True:
-                    if justswitched:
-                        alertscrollbig = 0
-                        alerttimeout = 60 * 10
-                    scrollalert = False
-                    if len(alerts) > 0:
-                        fnt = smallmedfont
-                        if getcrunch(alert_details[alertshow], smallmedfont, 994+screendiff, 588)[0] < 1:
-                            fnt = smallishfont
-                            if getcrunch(alert_details[alertshow], smallishfont, 994+screendiff, 588)[1] < 0.75:
-                                scrollalert = True
-                                alerttarget = getcrunch(alert_details[alertshow], smallishfont, 994+screendiff, 588)[3] + 5 - 588
-                        elif getcrunch(alert_details[alertshow], smallmedfont, 994+screendiff, 588)[1] < 0.75:
-                            fnt = smallishfont
-                            if getcrunch(alert_details[alertshow], smallishfont, 994+screendiff, 588)[1] < 0.75:
-                                scrollalert = True
-                                alerttarget = getcrunch(alert_details[alertshow], smallfont, 994+screendiff, 588)[3] + 5 - 588
+                if justswitched:
+                    alertscrollbig = 0
+                    alerttimeout = 60 * 10
+                scrollalert = False
+                if len(alerts) > 0:
+                    fnt = smallmedfont
+                    if getcrunch(alert_details[alertshow], smallmedfont, 994+screendiff, 588)[0] < 1:
+                        fnt = smallishfont
+                        if getcrunch(alert_details[alertshow], smallishfont, 994+screendiff, 588)[1] < 0.75:
+                            scrollalert = True
+                            alerttarget = getcrunch(alert_details[alertshow], smallishfont, 994+screendiff, 588)[3] + 5 - 588
+                    elif getcrunch(alert_details[alertshow], smallmedfont, 994+screendiff, 588)[1] < 0.75:
+                        fnt = smallishfont
+                        if getcrunch(alert_details[alertshow], smallishfont, 994+screendiff, 588)[1] < 0.75:
+                            scrollalert = True
+                            alerttarget = getcrunch(alert_details[alertshow], smallfont, 994+screendiff, 588)[3] + 5 - 588
 
-                        if alerttimeout <= 0:
-                            if scrollalert:
-                                if performance:
-                                    if alertdir == 1:
-                                        if len(alerts) > 1:
-                                            alertshow += 1
-                                            if alertshow > len(alerts)-1:
-                                                view = 0
-                                                justswitched = 1
-                                                changetime = 60 * 15
-                                            else:
-                                                changetime = 60 * 30
-                                        if alertscrollbig < alerttarget:
-                                            alertscrollbig += 300
-                                            alerttimeout = 60 * 5
-                                        elif alertscrollbig >= alerttarget:
-                                            alertscrollbig = 0
-                                            alertdir = -1
-                                            alerttimeout = 60 * 10
-                                    else:
-                                        if alertscrollbig > 0:
-                                            alertscrollbig -= 300
-                                            alerttimeout = 60 * 5
-                                            if alertscrollbig <= 0:
-                                                alertscrollbig = 0
-                                                alerttimeout = 60 * 10
-                                                alertdir = 1
-                                        else:
-                                            alertscrollbig = 0
-                                            alerttimeout = 60 * 10
-                                            alertdir = 1
-                                else:
-                                    if alertdir == 1:
-                                        if len(alerts) > 1:
-                                            alertshow += 1
-                                            if alertshow > len(alerts)-1:
-                                                view = 0
-                                                justswitched = 1
-                                                changetime = 60 * 15
-                                            else:
-                                                changetime = 60 * 30
-                                        if alertscrollbig < alerttarget:
-                                            alertscrollbig += 60 * delta
-                                        else:
-                                            alertscrollbig = alerttarget
-                                            alertdir = -1
-                                            alerttimeout = 60 * 10
-                                    else:
-                                        if alertscrollbig > 0:
-                                            alertscrollbig -= 60 * delta
-                                        else:
-                                            alertscrollbig = 0
-                                            alertdir = 1
-                                            alerttimeout = 60 * 10
-                        else:
-                            alerttimeout -= 60 * delta
-
+                    if alerttimeout <= 0:
                         if scrollalert:
-                            drawshadowbigcrunch(alert_details[alertshow], (255, 224, 224), fnt, 15, 96-alertscrollbig, 5, screenwidth-10, 9999, 127)
-                        else:
-                            alertscroll = 0
-                            drawshadowbigcrunch(alert_details[alertshow], (255, 224, 224), fnt, 15, 96, 5, screenwidth-10, 588, 127)
+                            if performance:
+                                if alertdir == 1:
+                                    if alertscrollbig < alerttarget:
+                                        alertscrollbig += 300
+                                        alerttimeout = 60 * 5
+                                    elif alertscrollbig >= alerttarget:
+                                        alertscrollbig = 0
+                                        alertdir = -1
+                                        alerttimeout = 60 * 10
+                                else:
+                                    if alertscrollbig > 0:
+                                        alertscrollbig -= 300
+                                        alerttimeout = 60 * 5
+                                        if alertscrollbig <= 0:
+                                            alertscrollbig = 0
+                                            alerttimeout = 60 * 10
+                                            alertdir = 1
+                                    else:
+                                        alertscrollbig = 0
+                                        alerttimeout = 60 * 10
+                                        alertdir = 1
+                            else:
+                                if alertdir == 1:
+                                    if alertscrollbig < alerttarget:
+                                        alertscrollbig += 60 * delta
+                                    else:
+                                        alertscrollbig = alerttarget
+                                        alertdir = -1
+                                        alerttimeout = 60 * 10
+                                else:
+                                    if alertscrollbig > 0:
+                                        alertscrollbig -= 60 * delta
+                                    else:
+                                        alertscrollbig = 0
+                                        alertdir = 1
+                                        alerttimeout = 60 * 10
                     else:
-                        if justswitched:
-                            changetime = 4 * 60
-                        nam = lang["sectionnames"][currentsection]
-                        namss = []
-                        
-                        if currentsection != 2:
-                            nvn = ("viewnames" if not redmode else "viewnamesred")
-                            for naym in lang[[nvn, "viewnameshealth"][currentsection]][1:]:
-                                namss.append(namer(naym))
-                        else:
-                            for naym in customslides:
-                                namss.append(get_lang_custom(naym[0]))
-                        
-                        nextup = "\n".join(namss)
-                        
-                        fant = bigfont# if not compact else medfont
-                        fint = smallmedfont# if not compact else smallishfont
-                        
-                        longest = 0
-                        for nameee in namss:
-                            sz = fint.size(nameee)[0]
-                            if sz > longest:
-                                longest = sz
-                        
-                        animtime = (2 * 60 - changetime + 2 * 60) / (2 * 60)
-                        
-                        if animtime < 0:
-                            animtime = 0
-                        
-                        if animtime > 1:
-                            animtime = 1
-                        
-                        animtime2 = (-changetime + 60) / 60
-                        
-                        if animtime2 < 0:
-                            animtime2 = 0
-                        
-                        textorigin = -fant.size(nextup)[0]
-                        textorigin0 = -fant.size(nextup)[1] * 5
-                        textorigin2 = -longest
+                        alerttimeout -= 60 * delta
 
-                        rotatee += 1
+                    if scrollalert:
+                        drawshadowbigcrunch(alert_details[alertshow], (255, 224, 224), fnt, 15, 96-alertscrollbig, 5, screenwidth-10, 9999, 127)
+                    else:
+                        alertscroll = 0
+                        drawshadowbigcrunch(alert_details[alertshow], (255, 224, 224), fnt, 15, 96, 5, screenwidth-10, 588, 127)
+                else:
+                    if justswitched:
+                        changetime = 4 * 60
+                    nam = lang["sectionnames"][currentsection]
+                    namss = []
+                    
+                    if currentsection != 2:
+                        advisory = (len(alerts)>0)
                         
-                        rotatay = pg.transform.rotate(transitionicons[currentsection], rotatee % 360)
+                        nvn = ("viewnames" if not redmode else "viewnamesred")
+                        for k, naym in enumerate(lang[[nvn, "viewnameshealth"][currentsection]][1:]):
+                            if k == 0 and advisory:
+                                namss.append(lang["alerts"])
+                                continue
+                            nm = namer(naym, True)
+                            if nm != "":
+                                namss.append(nm)
+                    else:
+                        for naym in customslides:
+                            namss.append(get_lang_custom(naym[0]))
+                    
+                    nextup = "\n".join(namss)
+                    
+                    fant = bigfont# if not compact else medfont
+                    fint = smallmedfont# if not compact else smallishfont
+                    
+                    longest = 0
+                    for nameee in namss:
+                        sz = fint.size(nameee)[0]
+                        if sz > longest:
+                            longest = sz
+                    
+                    animtime = (2 * 60 - changetime + 2 * 60) / (2 * 60)
+                    
+                    if animtime < 0:
+                        animtime = 0
+                    
+                    if animtime > 1:
+                        animtime = 1
+                    
+                    animtime2 = (-changetime + 60) / 60
+                    
+                    if animtime2 < 0:
+                        animtime2 = 0
+                    
+                    textorigin = -fant.size(nextup)[0]
+                    textorigin0 = -fant.size(nextup)[1] * 5
+                    textorigin2 = -longest
 
-                        window.blit(rotatay, (screenwidth-rotatay.get_width()/2, -rotatay.get_height()/2))
-                        
-                        drawshadowtext(nam, fant, lerp2(textorigin, 5, animtime), lerp2(64, textorigin0, animtime2), 5)#, screenwidth-longest-10)
+                    rotatee += 1
+                    
+                    rotatay = pg.transform.rotate(transitionicons[currentsection], rotatee % 360)
 
-                        drawshadowtext(nextup, fint, lerp2(screenwidth, screenwidth + textorigin2 - 5, animtime), lerp2(90-32+fant.size(nam)[1], 768, animtime2), 5)
-                
+                    window.blit(rotatay, (screenwidth-rotatay.get_width()/2, -rotatay.get_height()/2-fading*512))
+                    
+                    offs = fant.size(nam)
+                    
+                    off = squish_size_helper(offs, 1-animtime**1.4)
+                    
+                    drawshadowtext(nam, fant, lerp2(textorigin, 5, animtime**1.4)+offs[0]/2-off[0]/2, lerp2(64, textorigin0, animtime2)+offs[1]/2-off[1]/2, 5, filters=[SquishFilter(amount=(1-animtime**1.4))])#, screenwidth-longest-10)
+
+                    drawshadowtext(nextup, fint, lerp2(screenwidth, screenwidth + textorigin2 - 5, animtime), lerp2(90-32+fant.size(nam)[1], 768, animtime2), 5)
+            
             if currentsection == 0:
                 if view == -1:
                     pass
                 elif view in [1, 2] and perfit:
+                    offy = (fading if (view == 1 and changetime > 15) or (view == 2 and changetime <= 15) else 0)*screenwidth
                     precip = weather2["precip1Hour"]
                     if precip == None:
                         precip = "0"
                     else:
                         precip = str(round(precip/25.4, 1))
-                    currenttemp = drawshadowtemp(trail(round(weather2["temperature"])), giganticfont, 60, 80, 20, 180)
-                    drawshadowtext(f"°{t}", bigfont, currenttemp.get_width()+60, 125, 10, 160)
+                    currenttemp = drawshadowtemp(trail(round(weather2["temperature"])), giganticfont, 60-offy, 80, 20, 180)
+                    drawshadowtext(f"°{t}", bigfont, currenttemp.get_width()+60+getattr(varr, "foffset", 0)-offy, 125, 10, 160)
+                    moffset = getattr(varr, "moffset", 0)
                     if weather2["windDirectionCardinal"] != "CALM":
                         #print(weather2["features"][0]["properties"]["windSpeed"])
-                        drawshadowtext(f'{lang["wind"]}: {weather2["windDirectionCardinal"]} @ {round((weather2["windSpeed"]))} {kmpb}MPH', smallmedfont, 540, 125, 5, 127)
+                        drawshadowtext(f'{lang["wind"]}: {weather2["windDirectionCardinal"]} @ {round((weather2["windSpeed"]))} {kmpb}MPH', smallmedfont, 540-offy+moffset, 125, 5, 127)
                     else:
-                        drawshadowtext(f'{lang["wind"]}: {lang["calm"]}', smallmedfont, 540, 125, 5, 127)
-                    drawshadowtext(f'{lang["relhumid"]}: {roundd(weather2["relativeHumidity"], 1)}%', smallmedfont, 540, 175, 5, 127)
-                    drawshadowtext(f'{lang["precip"]}: {precip} {prec}', smallmedfont, 540, 225, 5, 127)
-                    drawshadowtext(f'{lang["visib"]}: {round(weather2["visibility"], 1)} {visi}', smallmedfont, 540, 275, 5, 127)
-                    drawshadowtext(f'{lang["feels"]}: {round(weather2["temperatureFeelsLike"])}°{t}', smallmedfont, 540, 325, 5, 127)
+                        drawshadowtext(f'{lang["wind"]}: {lang["calm"]}', smallmedfont, 540-offy+moffset, 125, 5, 127)
+                    drawshadowtext(f'{lang["relhumid"]}: {roundd(weather2["relativeHumidity"], 1)}%', smallmedfont, 540-offy+moffset, 175, 5, 127)
+                    drawshadowtext(f'{lang["precip"]}: {precip} {prec}', smallmedfont, 540-offy+moffset, 225, 5, 127)
+                    drawshadowtext(f'{lang["visib"]}: {round(weather2["visibility"], 1)} {visi}', smallmedfont, 540-offy+moffset, 275, 5, 127)
+                    drawshadowtext(f'{lang["feels"]}: {round(weather2["temperatureFeelsLike"])}°{t}', smallmedfont, 540-offy+moffset, 325, 5, 127)
 
-                    pressa = ["", "(+)", "(-)", "(/)", "(\)"]
+                    pressa = ["", "(+)", "(-)", "(/)", "(\\)"]
 
-                    drawshadowtext(f'{lang["pressure"]}: {roundd(weather2["pressureAltimeter"], 2)} {pres} {pressa[weather2["pressureTendencyCode"]]}', smallmedfont, 540, 375, 5, 127)
+                    drawshadowtext(f'{lang["pressure"]}: {roundd(weather2["pressureAltimeter"], 2)} {pres} {pressa[weather2["pressureTendencyCode"]]}', smallmedfont, 540-offy+moffset, 375, 5, 127)
                     #window.blit(currenttemp, (60, 80))
                     offsetw = -currentcondition.get_width()/2
                     if offsetw < -220:
                         offsetw = -220
 
-                    drawshadowcrunch(weather2["wxPhraseLong"], smallmedfont, 60+currenttemp.get_width()/2+offsetw, 400, 5, 440, 127)
+                    drawshadowcrunch(weather2["wxPhraseLong"], smallmedfont, 60+currenttemp.get_width()/2+offsetw-offy, 400, 5, 440, 127)
 
                     periods = weather3["daypart"][0]
                     if bottomtomorrow == 0 and bottomtomorrowm:
                         bottomtomorrow = 1
+                    offz = fading * screenwidth
                     if view == 1:
                         #tomorrow
                         # forecasted temps
-                        tm1 = drawshadowtemp(trail(periods["temperature"][bottomtomorrow]), bigfont, 60, 560, 10, 140)
+                        tm1 = drawshadowtemp(trail(periods["temperature"][bottomtomorrow]), bigfont, 60-offz, 560, 10, 140)
                         #tm2 = drawshadowtempcol(periods["temperatureMin"][bottomtomorrow], (135, 206, 250), medfont, 280, 540, 7, 127)
                         #tm3 = drawshadowtempcol(periods["temperatureMax"][bottomtomorrow], (255, 140, 0), medfont, 280, 610, 7, 127)
-                        drawshadowtext(f"°{t}", bigfont, tm1.get_width()+60, 560, 10, 140)
+                        drawshadowtext(f"°{t}", bigfont, tm1.get_width()+60-offz, 560, 10, 140)
                         #drawshadowtextcol(f"°{t}", (135, 206, 250, 255), medfont, tm2.get_width()+280, 540, 10, 140)
                         #drawshadowtextcol(f"°{t}", (255, 140, 0, 255), medfont, tm3.get_width()+280, 610, 10, 140)
                         if iconpack == "":
                             buffer = pg.Surface((128, 128))
                             pg.draw.rect(buffer, (127, 127, 127, 127), pg.rect.Rect(0, 0, 128, 128))
                             buffer = blur(expandSurface(buffer, 6), 4)
+                            window.blit(buffer, (tm1.get_width() + 190-offz, 560), special_flags=pg.BLEND_RGBA_MULT)
                         else:
                             global weathershadows
                             buffer = weathershadows[bottomtomorrow]
+                            window.blit(buffer, (tm1.get_width() + 190-offz, 560))
                         
-                        window.blit(buffer, (tm1.get_width() + 190, 560), special_flags=pg.BLEND_RGBA_MULT)
-                        window.blit(weathericons[bottomtomorrow], (tm1.get_width() + 180, 550))
+                        window.blit(weathericons[bottomtomorrow], (tm1.get_width() + 180-offz, 550))
                         # other metrics
                         prval = periods["precipChance"][bottomtomorrow]
                         if prval == None:
                             prval = "0"
-                        drawshadowtext(f'{lang["precipchance"]}: {prval}%', smallmedfont, 440, 540, 5, 127)
-                        drawshadowtext(f'{lang["wind"]}: {periods["windDirectionCardinal"][bottomtomorrow]} @ {periods["windSpeed"][bottomtomorrow]}', smallmedfont, 440, 590, 5, 127)
-                        drawshadowcrunch(periods["wxPhraseLong"][bottomtomorrow], smallmedfont, 440, 640, 5, screenwidth-440-10, 127)
+                        drawshadowtext(f'{lang["precipchance"]}: {prval}%', smallmedfont, 440-offz, 540, 5, 127)
+                        drawshadowtext(f'{lang["wind"]}: {periods["windDirectionCardinal"][bottomtomorrow]} @ {periods["windSpeed"][bottomtomorrow]}', smallmedfont, 440-offz, 590, 5, 127)
+                        drawshadowcrunch(periods["wxPhraseLong"][bottomtomorrow], smallmedfont, 440-offz, 640, 5, screenwidth-440-10, 127)
                     else:
-                        drawshadowtext("\n".join(wraptext(periods["narrative"][bottomtomorrow], pg.Rect(350, 480, screenwidth-350-15, 768-64-15), smallishfont)), smallishfont, 350, 480, 5, 127)
+                        drawshadowtext("\n".join(wraptext(periods["narrative"][bottomtomorrow], pg.Rect(350, 480, screenwidth-350-15, 768-64-15), smallishfont)), smallishfont, 350-offz, 480, 5, 127)
                         
                         if iconpack == "":
                             buffer = pg.Surface((192, 192))
                             pg.draw.rect(buffer, (127, 127, 127, 127), pg.rect.Rect(0, 0, 192, 192))
                             buffer = blur(expandSurface(buffer, 6), 4)
+                            window.blit(buffer, (110-offz, 490), special_flags=pg.BLEND_RGBA_MULT)
                         else:
                             global weathershadowbig
                             buffer = weathershadowbig
+                            window.blit(buffer, (110-offz, 490))
                         
-                        window.blit(buffer, (110, 490), special_flags=pg.BLEND_RGBA_MULT)
                         if weathericonbig != None:
-                            window.blit(weathericonbig, (100, 480))
+                            window.blit(weathericonbig, (100-offz, 480))
                 elif view == 3 and perfit:
                     nightv = 4
                     nowisday = (periods["dayOrNight"][0] == "D")
-                    if nightv <= 1:
-                        for i in range(7):
-                            buffer = pg.Surface((140, 556))
-                            pg.draw.rect(buffer, (127, 127, 127, 127), pg.rect.Rect(0, 0, 140, 556))
-                            buffer = blur(expandSurface(buffer, 6), 4)
-                            window.blit(buffer, (20 + i*142, 133), special_flags=pg.BLEND_RGBA_MULT)
-                            window.blit(weekbg if not nightv else weekbgn, (15 + i*142, 128))
-                            if nowisday and i == 0:
-                                continue
-                            if not nowisday and i == 6 and nightv:
-                                continue
-                            drawshadowtext(periods[i*2+(not nowisday)+nightv]["name"][0:3].upper(), smallmedfont, 15+i*142+70-smallmedfont.size(periods[i*2+(not nowisday)+nightv]["name"][0:3].upper())[0]/2, 138, 5, 127)
-                            drawshadowtemp(periods[i*2+(not nowisday)+nightv]["temperature"], bigfont, 30 + i*142, 168, 5, 127)
-                            drawshadowtext(f"{lang['wind']}:", smallishfont, 40 + i*142, 300, 5, 127)
-                            drawshadowtext(periods[i*2+(not nowisday)+nightv]["windDirection"], medfont, 85+i*142-medfont.size(periods[i*2+(not nowisday)+nightv]["windDirection"])[0]/2, 330, 5, 127)
-                            window.blit(weathericons[i*2+(not nowisday)+nightv], (21+142*i, 417+128+5))
-                    elif nightv <= 3:
-                        for i in range(7):
-                            buffer = pg.Surface((140, 556))
-                            pg.draw.rect(buffer, (127, 127, 127, 127), pg.rect.Rect(0, 0, 140, 556))
-                            buffer = blur(expandSurface(buffer, 6), 4)
-                            window.blit(buffer, (20 + i*142, 133), special_flags=pg.BLEND_RGBA_MULT)
-                            drawnight = (i % 2 == 0)
-                            offset = not nowisday
-                            if not nowisday:
-                                drawnight = not drawnight
-                            if nightv in [2, 3]:
-                                drawnight = not drawnight
-                            if nightv == 3:
-                                drawnight = not drawnight
-                            window.blit(weekbg if not drawnight else weekbgn, (15 + i*142, 128))
-                            if nowisday and i in [0, 1] and nightv == 2:
-                                continue
-                            if not nowisday and i >= 5 and nightv == 3:
-                                continue
-                            drawshadowtext(periods[i+offset+(nightv-2)*7]["name"][0:3].upper(), smallmedfont, 15+i*142+70-smallmedfont.size(periods[i+offset+(nightv-2)*7]["name"][0:3].upper())[0]/2, 138, 5, 127)
-                            drawshadowtemp(periods[i+offset+(nightv-2)*7]["temperature"], bigfont, 30 + i*142, 168, 5, 127)
-                            drawshadowtext(f"{lang['wind']}:", smallishfont, 40 + i*142, 300, 5, 127)
-                            drawshadowtext(periods[i+offset+(nightv-2)*7]["windDirection"], medfont, 85+i*142-medfont.size(periods[i+offset+(nightv-2)*7]["windDirection"])[0]/2, 330, 5, 127)
-                            window.blit(weathericons[i+offset+(nightv-2)*7], (21+142*i, 417+128+5))
-                    else:
-                        if justswitched and "7daybuffer" not in cache:
-                            buffer = pg.Surface((140, 276))
-                            pg.draw.rect(buffer, (127, 127, 127, 127), pg.rect.Rect(0, 0, 140, 276))
-                            buffer = blur(expandSurface(buffer, 6), 4)
-                            cache["7daybuffer"] = buffer
+                    # if nightv <= 1:
+                    #     for i in range(7):
+                    #         buffer = pg.Surface((140, 556))
+                    #         pg.draw.rect(buffer, (127, 127, 127, 127), pg.rect.Rect(0, 0, 140, 556))
+                    #         buffer = blur(expandSurface(buffer, 6), 4)
+                    #         window.blit(buffer, (20 + i*142, 133), special_flags=pg.BLEND_RGBA_MULT)
+                    #         window.blit(weekbg if not nightv else weekbgn, (15 + i*142, 128))
+                    #         if nowisday and i == 0:
+                    #             continue
+                    #         if not nowisday and i == 6 and nightv:
+                    #             continue
+                    #         drawshadowtext(periods[i*2+(not nowisday)+nightv]["name"][0:3].upper(), smallmedfont, 15+i*142+70-smallmedfont.size(periods[i*2+(not nowisday)+nightv]["name"][0:3].upper())[0]/2, 138, 5, 127)
+                    #         drawshadowtemp(periods[i*2+(not nowisday)+nightv]["temperature"], bigfont, 30 + i*142, 168, 5, 127)
+                    #         drawshadowtext(f"{lang['wind']}:", smallishfont, 40 + i*142, 300, 5, 127)
+                    #         drawshadowtext(periods[i*2+(not nowisday)+nightv]["windDirection"], medfont, 85+i*142-medfont.size(periods[i*2+(not nowisday)+nightv]["windDirection"])[0]/2, 330, 5, 127)
+                    #         window.blit(weathericons[i*2+(not nowisday)+nightv], (21+142*i, 417+128+5))
+                    # elif nightv <= 3:
+                    #     for i in range(7):
+                    #         buffer = pg.Surface((140, 556))
+                    #         pg.draw.rect(buffer, (127, 127, 127, 127), pg.rect.Rect(0, 0, 140, 556))
+                    #         buffer = blur(expandSurface(buffer, 6), 4)
+                    #         window.blit(buffer, (20 + i*142, 133), special_flags=pg.BLEND_RGBA_MULT)
+                    #         drawnight = (i % 2 == 0)
+                    #         offset = not nowisday
+                    #         if not nowisday:
+                    #             drawnight = not drawnight
+                    #         if nightv in [2, 3]:
+                    #             drawnight = not drawnight
+                    #         if nightv == 3:
+                    #             drawnight = not drawnight
+                    #         window.blit(weekbg if not drawnight else weekbgn, (15 + i*142, 128))
+                    #         if nowisday and i in [0, 1] and nightv == 2:
+                    #             continue
+                    #         if not nowisday and i >= 5 and nightv == 3:
+                    #             continue
+                    #         drawshadowtext(periods[i+offset+(nightv-2)*7]["name"][0:3].upper(), smallmedfont, 15+i*142+70-smallmedfont.size(periods[i+offset+(nightv-2)*7]["name"][0:3].upper())[0]/2, 138, 5, 127)
+                    #         drawshadowtemp(periods[i+offset+(nightv-2)*7]["temperature"], bigfont, 30 + i*142, 168, 5, 127)
+                    #         drawshadowtext(f"{lang['wind']}:", smallishfont, 40 + i*142, 300, 5, 127)
+                    #         drawshadowtext(periods[i+offset+(nightv-2)*7]["windDirection"], medfont, 85+i*142-medfont.size(periods[i+offset+(nightv-2)*7]["windDirection"])[0]/2, 330, 5, 127)
+                    #         window.blit(weathericons[i+offset+(nightv-2)*7], (21+142*i, 417+128+5))
+                    # else:
+                    buffer = cache["7daybuffer"]
+                    exfm = getattr(varr, "extendedfamount", 18)
+                    for j in range(exfm):
+                        i = j/2
+                        drawingn = (periods["dayOrNight"][j] == "N")
+                        #if nowisday and i == 0:
+                        #    continue
+                        #if not nowisday and i == 6 and drawingn:
+                        #    continue
+                        sind = 0
+                        if periods["daypartName"] == None:
+                            sind += 1
                         else:
-                            buffer = cache["7daybuffer"]
-                        if partnered:
-                            if justswitched and "logoshadow" not in cache:
-                                logosh = turnintoashadow(logosurf)
-                                cache["logoshadow"] = logosh
-                            else:
-                                logosh = cache["logoshadow"]
-                        exfm = getattr(varr, "extendedfamount", 18)
-                        for j in range(exfm):
-                            i = j/2
-                            drawingn = (periods["dayOrNight"][j] == "N")
-                            #if nowisday and i == 0:
-                            #    continue
-                            #if not nowisday and i == 6 and drawingn:
-                            #    continue
-                            sind = 0
-                            if periods["daypartName"] == None:
-                                sind += 1
-                            else:
-                                sind += 2
-                            ind = (j + sind)
+                            sind += 2
+                        ind = (j + sind)
+                        
+                        offy = fading * screenwidth * (1 if drawingn else -1)
 
-                            off = -142+71*(20-exfm+1)/2 + 78 * nowisday
+                        off = -142+71*(20-exfm+1)/2 + 78 * nowisday + offy
 
-                            if not drawingn:
-                                off += 71
+                        if not drawingn:
+                            off += 71
 
-                            scrh = off
+                        scrh = off
 
-                            window.blit(buffer, (20 + scrh + i*142 - 78 * nowisday, 133+280*drawingn), special_flags=pg.BLEND_RGBA_MULT)
-                            
-                            now = dt.date.today()
-                            plus = now + dt.timedelta(days=(j/2+sind/2))
-                            
-                            bgg = weekbgc if not drawingn else weekbgnc
-                            if plus.weekday() >= 5:
-                                bgg = weekbgwc if not drawingn else weekbgwnc
-                            
-                            window.blit(bgg, (15 + scrh + i*142 - 78 * nowisday, 128+280*drawingn))
-                            
-                            drawshadowtext(weather3["dayOfWeek"][math.floor(j/2+sind/2)][0:(3 if locl != "de-DE" else 2)].upper(), smallmedfont, 15+ scrh +i*142 - 78 * nowisday+70-smallmedfont.size(weather3["dayOfWeek"][math.floor(j/2+sind/2)][0:(3 if locl != "de-DE" else 2)].upper())[0]/2, 138+280*drawingn, 5, 127)
-                            drawshadowtemp(trail(periods["temperature"][ind]), medfont, 85 - 78 * nowisday - medfont.size(trail(str(periods["temperature"][ind])))[0]/2 + scrh + i*142, 172+280*drawingn, 5, 127)
-                            if weathericons[ind] != None:
-                                window.blit(weathericons[ind], (21+ scrh +142*i - 78 * nowisday, 417+128+5-280*(not drawingn)))
-                            drawshadowtext(f'{lang["wind"]}: {periods["windDirectionCardinal"][ind]}', smallfont, 84+ scrh - 78 * nowisday +i*142-smallfont.size(f'{lang["wind"]}: {periods["windDirectionCardinal"][ind]}')[0]/2, 234+280*drawingn, 5, 127)
+                        window.blit(buffer, (20 + scrh + i*142 - 78 * nowisday, 133+280*drawingn), special_flags=pg.BLEND_RGBA_MULT)
+                        
+                        now = dt.date.today()
+                        plus = now + dt.timedelta(days=(j/2+sind/2))
+                        
+                        bgg = weekbgc if not drawingn else weekbgnc
+                        if plus.weekday() >= 5:
+                            bgg = weekbgwc if not drawingn else weekbgwnc
+                        
+                        window.blit(bgg, (15 + scrh + i*142 - 78 * nowisday, 128+280*drawingn))
+                        
+                        drawshadowtext(weather3["dayOfWeek"][math.floor(j/2+sind/2)][0:(3 if locl != "de-DE" else 2)].upper(), smallmedfont, 15+ scrh +i*142 - 78 * nowisday+70-smallmedfont.size(weather3["dayOfWeek"][math.floor(j/2+sind/2)][0:(3 if locl != "de-DE" else 2)].upper())[0]/2, 138+280*drawingn, 5, 127)
+                        drawshadowtemp(trail(periods["temperature"][ind]), medfont, 85 - 78 * nowisday - medfont.size(trail(str(periods["temperature"][ind])))[0]/2 + scrh + i*142, 172+280*drawingn, 5, 127)
+                        if weathericons[ind] != None:
+                            window.blit(weathericons[ind], (21+ scrh +142*i - 78 * nowisday, 417+128+5-280*(not drawingn)))
+                        drawshadowtext(f'{lang["wind"]}: {periods["windDirectionCardinal"][ind]}', smallfont, 84+ scrh - 78 * nowisday +i*142-smallfont.size(f'{lang["wind"]}: {periods["windDirectionCardinal"][ind]}')[0]/2, 234+280*drawingn, 5, 127)
                         #if partnered:
                         #    window.blit(turnintoashadow(logosurf), (20 - 39 * nowisday + 142 * 7, 138))
                         #    window.blit(logosurf, (15 - 39 * nowisday + 142 * 7, 133))
                 elif view == 4 and perfit:
-                    if justswitched:
-                        buffer = pg.Surface((994+screendiff, 92))
-                        pg.draw.rect(buffer, (127, 127, 127, 127), pg.rect.Rect(0, 0, 994+screendiff, 556))
-                        buffer = blur(expandSurface(buffer, 6), 4)
-                        cache["hourlybuffer"] = buffer
                     #drawshadowtext("\n".join(wraptext("Unimplemented! If you want to see this, wait for the official update!", pg.Rect(5, 5, 1356, 768-128-64), medfont)), medfont, 5, 133, 5)
                     scr = 0
                     ct = 15*60 - changetime
@@ -2449,6 +2930,7 @@ def main():
                     if ct > 13*60:
                         scr = -1728
                     for i in range(24):
+                        offy = fading * screenwidth * (1 if (i%2) else -1)
                         #skip if not visible
                         if (128+96*i + scr) > 768:
                             continue
@@ -2456,22 +2938,23 @@ def main():
                         if (128+96*i + scr) < -101:
                             continue
                         
-                        window.blit(cache["hourlybuffer"], (20, 133 + 96*i + scr), special_flags=pg.BLEND_RGBA_MULT)
-                        window.blit(hourlybg, (15, 128+96*i + scr))
+                        window.blit(cache["hourlybuffer"], (20+offy, 133 + 96*i + scr), special_flags=pg.BLEND_RGBA_MULT)
+                        window.blit(hourlybg, (15+offy, 128+96*i + scr))
                         global weathericonshourly
-                        window.blit(weathericonshourly[i], (21, 128+96*i+6 + scr))
+                        window.blit(weathericonshourly[i], (21+offy, 128+96*i+6 + scr))
                         #draw metrics
                         tx = f'{splubby(dt.datetime.fromtimestamp(weatherraw["validTimeUtc"][i]).strftime("%I"))} {("AM" if (dt.datetime.fromtimestamp(weatherraw["validTimeUtc"][i]).strftime("%p") == "AM") else "PM")}'
-                        drawshadowtext(tx, smallmedfont, screenwidth - smallmedfont.size(tx)[0]-20, 128+20+96*i + scr, 5)
-                        drawshadowtext(str(weatherraw["temperature"][i]) + "°" + t, bigfont, 15+92+5, 100+18+96*i + scr, 5)
-                        drawshadowtext(lang["wind"] + ":", smallmedfont, 300+15+92+5, 90+96*i+40 + scr, 5)
-                        drawshadowtext((str(weatherraw["windSpeed"][i]) + kmp + "mph ") + weatherraw["windDirectionCardinal"][i], smallmedfont, 300+15+92+5, 90+92/2+96*i+40 + scr, 5)
-                        drawshadowtextcol(str(weatherraw["precipChance"][i]) + "%", (0, 255, 255), smallmedfont, 600+15+92+5, 90+96*i+40 + scr, 5)
-                        drawshadowtextcol(str(weatherraw["relativeHumidity"][i]) + "%", (255, 127, 0), smallmedfont, 600+15+92+5, 90+92/2+96*i+40 + scr, 5)
-                        drawshadowtextcol(lang["feels"] + ":", (255, 0, 0), smallmedfont, 750+15+92+5, 90+96*i+40 + scr, 5)
-                        drawshadowtextcol(str(weatherraw["temperatureFeelsLike"][i]) + "°" + t, (255, 0, 0), smallmedfont, 750+15+92+5, 90+92/2+96*i+40 + scr, 5)
+                        drawshadowtext(tx, smallmedfont, screenwidth - smallmedfont.size(tx)[0]-20+offy, 128+20+96*i + scr, 5)
+                        drawshadowtext(str(weatherraw["temperature"][i]) + "°" + t, bigfont, 15+92+5+offy, 100+18+96*i + scr, 5)
+                        drawshadowtext(lang["wind"] + ":", smallmedfont, 300+15+92+5+offy, 90+96*i+40 + scr, 5)
+                        drawshadowtext((str(weatherraw["windSpeed"][i]) + kmp + "mph ") + weatherraw["windDirectionCardinal"][i], smallmedfont, 300+15+92+5+offy, 90+92/2+96*i+40 + scr, 5)
+                        drawshadowtextcol(str(weatherraw["precipChance"][i]) + "%", (0, 255, 255), smallmedfont, 600+15+92+5+offy, 90+96*i+40 + scr, 5)
+                        drawshadowtextcol(str(weatherraw["relativeHumidity"][i]) + "%", (255, 127, 0), smallmedfont, 600+15+92+5+offy, 90+92/2+96*i+40 + scr, 5)
+                        drawshadowtextcol(lang["feels"] + ":", (255, 0, 0), smallmedfont, 750+15+92+5+offy, 90+96*i+40 + scr, 5)
+                        drawshadowtextcol(str(weatherraw["temperatureFeelsLike"][i]) + "°" + t, (255, 0, 0), smallmedfont, 750+15+92+5+offy, 90+92/2+96*i+40 + scr, 5)
                 
                 elif view == 5 and perfit:
+                    offy = fading * 768
                     if justswitched:
                         g, gs, vs = makehourlygraph()
 
@@ -2486,10 +2969,10 @@ def main():
                         g, gs, vs = cache["hourlygraph"]
                         buffer = cache["hourlybuffer"]
 
-                    window.blit(buffer, (20, 133), special_flags=pg.BLEND_RGBA_MULT)
-                    window.blit(graphbg, (15, 128))
-                    window.blit(gs, (20, 133), special_flags=pg.BLEND_RGBA_MULT)
-                    window.blit(g, (20, 133))
+                    window.blit(buffer, (20, 133-offy), special_flags=pg.BLEND_RGBA_MULT)
+                    window.blit(graphbg, (15, 128-offy))
+                    window.blit(gs, (20, 133-offy), special_flags=pg.BLEND_RGBA_MULT)
+                    window.blit(g, (20, 133-offy))
                     now = dt.datetime.fromtimestamp(weatherraw["validTimeUtc"][0])
                     now6 = dt.datetime.fromtimestamp(weatherraw["validTimeUtc"][0]) + dt.timedelta(hours=6)
                     now12 = dt.datetime.fromtimestamp(weatherraw["validTimeUtc"][0]) + dt.timedelta(hours=12)
@@ -2500,29 +2983,30 @@ def main():
                     time3 = splubby(now12.strftime("%I")) + ("AM" if (now12.strftime("%p") == "AM") else "PM")
                     time4 = splubby(now18.strftime("%I")) + ("AM" if (now18.strftime("%p") == "AM") else "PM")
                     time5 = splubby(now24.strftime("%I")) + ("AM" if (now24.strftime("%p") == "AM") else "PM")
-                    drawshadowtext(f'{round(vs["maxtemp"])}°', smallmedfont, 20, 128, 5)
-                    drawshadowtext(f'{round(vs["medtemp"])}°', smallmedfont, 20, 128+440/2, 5)
-                    drawshadowtext(f'{round(vs["mintemp"])}°', smallmedfont, 20, 128+440, 5)
-                    drawshadowtext(time1, smallmedfont, 20, 128+500, 5)
-                    drawshadowtext(time2, smallmedfont, (screenwidth-640+530)/4 + 15, 128+500, 5)
-                    drawshadowtext(time3, smallmedfont, (screenwidth-640+530)/2 + 10, 128+500, 5)
-                    drawshadowtext(time4, smallmedfont, (screenwidth-640+530)*3/4 + 5, 128+500, 5)
-                    drawshadowtext(time5, smallmedfont, screenwidth-640+530, 128+500, 5)
-                    drawshadowtextcol(f"{lang['temp']}", (255, 0, 0), smallmedfont, screenwidth-16-smallmedfont.size(f"{lang['temp']}")[0], 128, 5, 127)
-                    drawshadowtextcol(f"{lang['precip']} %", (0, 255, 255), smallmedfont, screenwidth-16-smallmedfont.size(f"{lang['precip']} %")[0], 168, 5, 127)
-                    drawshadowtextcol(f"{lang['relhumidshort']} %", (255, 127, 0), smallmedfont, screenwidth-16-smallmedfont.size(f"{lang['relhumidshort']} %")[0], 208, 5, 127)
+                    drawshadowtext(f'{round(vs["maxtemp"])}°', smallmedfont, 20, 128-offy, 5)
+                    drawshadowtext(f'{round(vs["medtemp"])}°', smallmedfont, 20, 128+440/2-offy, 5)
+                    drawshadowtext(f'{round(vs["mintemp"])}°', smallmedfont, 20, 128+440-offy, 5)
+                    drawshadowtext(time1, smallmedfont, 20, 128+500-offy, 5)
+                    drawshadowtext(time2, smallmedfont, (screenwidth-640+530)/4 + 15, 128+500-offy, 5)
+                    drawshadowtext(time3, smallmedfont, (screenwidth-640+530)/2 + 10, 128+500-offy, 5)
+                    drawshadowtext(time4, smallmedfont, (screenwidth-640+530)*3/4 + 5, 128+500-offy, 5)
+                    drawshadowtext(time5, smallmedfont, screenwidth-640+530, 128+500-offy, 5)
+                    drawshadowtextcol(f"{lang['temp']}", (255, 0, 0), smallmedfont, screenwidth-16-smallmedfont.size(f"{lang['temp']}")[0], 128, 5-offy, 127)
+                    drawshadowtextcol(f"{lang['precip']} %", (0, 255, 255), smallmedfont, screenwidth-16-smallmedfont.size(f"{lang['precip']} %")[0], 168, 5-offy, 127)
+                    drawshadowtextcol(f"{lang['relhumidshort']} %", (255, 127, 0), smallmedfont, screenwidth-16-smallmedfont.size(f"{lang['relhumidshort']} %")[0], 208, 5-offy, 127)
                 elif view == 6 and perfit:
                     if justswitched:
                         cache["tempscache"] = {}
                     for city in range(len(travelcities)):
+                        offy = fading * screenwidth * (1 if (city%2) else -1)
                         if city >= len(travelnames):
-                            drawshadowtext(lang["loading"], smallmedfont, 5, 130 + city*45, 5)
+                            drawshadowtext(lang["loading"], smallmedfont, 5+offy, 130 + city*45, 5)
                             continue
                         if city >= len(travelweathers):
-                            drawshadowtext(lang["loading"], smallmedfont, 5, 130 + city*45, 5)
+                            drawshadowtext(lang["loading"], smallmedfont, 5+offy, 130 + city*45, 5)
                             continue
                         
-                        drawshadowtext(travelnames[city], smallmedfont, 5, 130 + city*45, 5)
+                        drawshadowtext(travelnames[city], smallmedfont, 5+offy, 130 + city*45, 5)
                         if justswitched:
                             temps = []
                             err = False 
@@ -2539,29 +3023,30 @@ def main():
                             lowt, hight, err = cache["tempscache"][city]
                         if not compact:
                             if not err:
-                                drawshadowtempcol(f'{lang["low"]}: {lowt}°{t}', (135, 206, 235), smallmedfont, screenwidth - 550, 130 + city*45, 5)
-                                drawshadowtextcol(f'{lang["high"]}: {hight}°{t}', (255, 140, 0), smallmedfont, screenwidth - 250, 130 + city*45, 5)
+                                drawshadowtempcol(f'{lang["low"]}: {lowt}°{t}', (135, 206, 235), smallmedfont, screenwidth - 550+offy, 130 + city*45, 5)
+                                drawshadowtextcol(f'{lang["high"]}: {hight}°{t}', (255, 140, 0), smallmedfont, screenwidth - 250+offy, 130 + city*45, 5)
                             else:
-                                drawshadowtempcol(lang["dataerror"], (255, 0, 0), smallmedfont, screenwidth - 550, 130 + city*45, 5)
+                                drawshadowtempcol(lang["dataerror"], (255, 0, 0), smallmedfont, screenwidth - 550+offy, 130 + city*45, 5)
                         else:
                             if not err:
-                                drawshadowtemp(f'{lowt}°{t}/{hight}°{t}', smallmedfont, screenwidth - 250, 130 + city*45, 5)
+                                drawshadowtemp(f'{lowt}°{t}/{hight}°{t}', smallmedfont, screenwidth - 250+offy, 130 + city*45, 5)
                             else:
-                                drawshadowtempcol(f'Error', (255, 0, 0), smallmedfont, screenwidth - 550, 130 + city*45, 5)
+                                drawshadowtempcol(f'Error', (255, 0, 0), smallmedfont, screenwidth - 550+offy, 130 + city*45, 5)
                 elif view == 7 and perfit:
-                    drawshadowbigcrunch("\n".join(wraptext(f'{periods["daypartName"][0+bottomtomorrowm]}...{periods["narrative"][0+bottomtomorrowm]}', pg.Rect(15, 128, 994+screendiff, 588+32), smallmedfont)), (255, 255, 255), smallmedfont, 15, 128, 5, 994+screendiff, 588+32, 127)
+                    drawshadowbigcrunch("\n".join(wraptext(f'{periods["daypartName"][0+bottomtomorrowm]}...{periods["narrative"][0+bottomtomorrowm]}', pg.Rect(15, 128, 994+screendiff, 588+32), smallmedfont)), (255, 255, 255), smallmedfont, 15-fading*screenwidth, 128, 5, 994+screendiff, 588+32, 127)
                 elif view == 8 and perfit:
-                    drawshadowbigcrunch("\n".join(wraptext(f'{periods["daypartName"][1+bottomtomorrowm]}...{periods["narrative"][1+bottomtomorrowm]}', pg.Rect(15, 128, 994+screendiff, 588+32), smallmedfont)), (255, 255, 255), smallmedfont, 15, 128, 5, 994+screendiff, 588+32, 127)
+                    drawshadowbigcrunch("\n".join(wraptext(f'{periods["daypartName"][1+bottomtomorrowm]}...{periods["narrative"][1+bottomtomorrowm]}', pg.Rect(15, 128, 994+screendiff, 588+32), smallmedfont)), (255, 255, 255), smallmedfont, 15-fading*screenwidth, 128, 5, 994+screendiff, 588+32, 127)
                 elif view == 9 and perfit:
-                    drawshadowbigcrunch("\n".join(wraptext(f'{periods["daypartName"][2+bottomtomorrowm]}...{periods["narrative"][2+bottomtomorrowm]}', pg.Rect(15, 128, 994+screendiff, 588+32), smallmedfont)), (255, 255, 255), smallmedfont, 15, 128, 5, 994+screendiff, 588+32, 127)
+                    drawshadowbigcrunch("\n".join(wraptext(f'{periods["daypartName"][2+bottomtomorrowm]}...{periods["narrative"][2+bottomtomorrowm]}', pg.Rect(15, 128, 994+screendiff, 588+32), smallmedfont)), (255, 255, 255), smallmedfont, 15-fading*screenwidth, 128, 5, 994+screendiff, 588+32, 127)
                 elif view == 10 and perfit:
-                    if justswitched:
+                    offy = fading * 768
+                    if justswitched and not (schedule_active and presentation == "short"):
                         changetime = 30 * 60
                     mappyind = -(math.floor(changetime / 30) % 20 + 1)
                     if True: #temp
-                        window.blit(mappy, (screenwidth/2-mappy.get_width()/2, 768/2-mappy.get_height()/2))
-                        window.blit(mappy_heat[mappyind], (screenwidth/2-mappy_heat[mappyind].get_width()/2, 768/2-mappy_heat[mappyind].get_height()/2))
-                        drawshadowtext(str(timestam[0][mappyind]), smallishfont, 5, 70, 5)
+                        window.blit(mappy, (screenwidth/2-mappy.get_width()/2, 768/2-mappy.get_height()/2+offy))
+                        window.blit(mappy_heat[mappyind], (screenwidth/2-mappy_heat[mappyind].get_width()/2, 768/2-mappy_heat[mappyind].get_height()/2+offy))
+                        drawshadowtext(str(timestam[0][mappyind]), smallishfont, 5, 70+offy, 5)
                         if debug:
                             #draw a red square around the base tile
                             global basetilee
@@ -2573,54 +3058,58 @@ def main():
                         window.blit(buffer, (screenwidth/2-radarimage.get_width()/2+5, 800/2-radarimage.get_height()/2+5), special_flags=pg.BLEND_RGBA_MULT)
                         window.blit(radarimage, (screenwidth/2-radarimage.get_width()/2, 800/2-radarimage.get_height()/2))
                 elif view == 11 and perfit:
-                    window.blit(turnintoashadow(logo), (10, 133))
-                    window.blit(logo, (5, 128))
-                    drawshadowtextroto(lang["localscopeby"], medfont, screenwidth-5, 128, 0, 5, rx=-1)
-                    window.blit(turnintoashadow(mylogo), (screenwidth-mylogo.get_width()-95, 188+5))
-                    window.blit(mylogo, (screenwidth-mylogo.get_width()-100, 188))
-                    drawshadowtextcol(lang["alsotry"], (255, 255, 0), medfont, 5, 768-64-80, 5)
+                    offy = fading * 768
+                    if "credits" not in rastercache:
+                        rastercache["credits"] = pg.Surface(window.size, pg.SRCALPHA)
+                        #rastercache["credits"].blit(logo, (5, 128))
+                        #rastercache["credits"].blit(mylogo, (screenwidth-mylogo.get_width()-100, 188))
+                        #if partnered:
+                            #rastercache["credits"].
+                    #window.blit(turnintoashadow(logo), (10, 133))
+                    #drawshadowtextroto(lang["localscopeby"], medfont, screenwidth-5, 128, 0, 5, rx=-1)
+                    #window.blit(turnintoashadow(mylogo), (screenwidth-mylogo.get_width()-95, 188+5))
+                    #drawshadowtextcol(lang["alsotry"], (255, 255, 0), medfont, 5, 768-64-80, 5)
                     if partnered:
-                        window.blit(turnintoashadow(logosurf), (screenwidth/2-logosurf.get_width()/2+5, 768/2-logosurf.get_height()/2+5))
-                        window.blit(logosurf, (screenwidth/2-logosurf.get_width()/2, 768/2-logosurf.get_height()/2))
+                        window.blit(turnintoashadow(logosurf), (screenwidth/2-logosurf.get_width()/2+5, 768/2-logosurf.get_height()/2+5-offy))
+                        window.blit(logosurf, (screenwidth/2-logosurf.get_width()/2, 768/2-logosurf.get_height()/2-offy))
+                    #window.blit(rastercache["credits"], (0, 0))
+                    
             elif currentsection == 1:
                 # HEALTHSECT (here for search purposes)
                 if view == 1 and perfit:
-                    drawshadowtext(f'Air Quality Index: {airq["globalairquality"]["airQualityIndex"]} ({airq["globalairquality"]["airQualityCategory"]})', medfont, 5, 128, 5)
-                    drawshadowtext(f'Primary Pollutant: {airq["globalairquality"]["primaryPollutant"]}', smallmedfont, 5, 200, 5)
-                    drawshadowtext(airq["globalairquality"]["messages"]["General"]["title"], smallmedfont, 5, 260, 5)
-                    drawshadowcrunch(airq["globalairquality"]["messages"]["General"]["text"], smallishfont, 5, 305, 5, screenwidth-10)
-                    drawshadowtext(airq["globalairquality"]["messages"]["Sensitive Group"]["title"], smallmedfont, 5, 340, 5)
-                    drawshadowcrunch(airq["globalairquality"]["messages"]["Sensitive Group"]["text"], smallishfont, 5, 385, 5, screenwidth-10)
-                    drawshadowcrunch(airq["globalairquality"]["source"], tinyfont, 5, 668, 5, screenwidth-10)
+                    offy = fading * screenwidth
+                    drawshadowtext(f'Air Quality Index: {airq["globalairquality"]["airQualityIndex"]} ({airq["globalairquality"]["airQualityCategory"]})', medfont, 5-offy, 128, 5)
+                    drawshadowtext(f'Primary Pollutant: {airq["globalairquality"]["primaryPollutant"]}', smallmedfont, 5-offy, 200, 5)
+                    drawshadowtext(airq["globalairquality"]["messages"]["General"]["title"], smallmedfont, 5-offy, 260, 5)
+                    drawshadowcrunch(airq["globalairquality"]["messages"]["General"]["text"], smallishfont, 5-offy, 305, 5, screenwidth-10)
+                    drawshadowtext(airq["globalairquality"]["messages"]["Sensitive Group"]["title"], smallmedfont, 5-offy, 340, 5)
+                    drawshadowcrunch(airq["globalairquality"]["messages"]["Sensitive Group"]["text"], smallishfont, 5-offy, 385, 5, screenwidth-10)
+                    drawshadowcrunch(airq["globalairquality"]["source"], tinyfont, 5-offy, 668, 5, screenwidth-10)
                 elif view == 2 and perfit:
-                    drawshadowtext(f'UV Index: {uvi["uvIndexCurrent"]["uvIndex"]} ({uvi["uvIndexCurrent"]["uvDesc"]})', medfont, 5, 128, 5)
-                    drawshadowtext(uvi["uvIndexCurrent"]["uvWarning"] if uvi["uvIndexCurrent"]["uvWarning"] else lang["noalertshort"], smallmedfont, 5, 200, 5)
+                    offy = fading * screenwidth
+                    drawshadowtext(f'UV Index: {uvi["uvIndexCurrent"]["uvIndex"]} ({uvi["uvIndexCurrent"]["uvDesc"]})', medfont, 5-offy, 128, 5)
+                    drawshadowtext(uvi["uvIndexCurrent"]["uvWarning"] if uvi["uvIndexCurrent"]["uvWarning"] else lang["noalertshort"], smallmedfont, 5-offy, 200, 5)
                 elif view == 3 and perfit:
+                    offy = fading * screenwidth
                     global pollen
-                    drawshadowtext(pollen["pollenobservations"][0]["stn_cmnt"], smallmedfont, 5, 128, 5)
+                    drawshadowtext(pollen["pollenobservations"][0]["stn_cmnt"], smallmedfont, 5-offy, 128, 5)
                     obser = pollen["pollenobservations"][0]["pollenobservation"]
                     for i in range(len(obser)):
-                        drawshadowtext(f'{obser[i]["pollen_type"]}: {obser[i]["pollen_desc"]}', smallmedfont, 5, 168+i*40, 5)
+                        drawshadowtext(f'{obser[i]["pollen_type"]}: {obser[i]["pollen_desc"]}', smallmedfont, 5-offy, 168+i*40, 5)
                     
             if perfit and (currentsection == 0):
                 if view == 1:
-                    window.blit(topshadow, (0, 524), special_flags=pg.BLEND_RGBA_MULT)
-                    window.blit(topgradient if not redmode else topgradientred, (0, 460))
+                    window.blit(topshadow, (0-offz, 524), special_flags=pg.BLEND_RGBA_MULT)
+                    window.blit(topgradient if not redmode else topgradientred, (-offz, 460))
                     if bottomtomorrowm:
                         if bottomtomorrow == 0:
                             bottomtomorrow = 1
-                    drawshadowtext(periods["daypartName"][bottomtomorrow], smallmedfont, 5, 465, 5, 127, filters=filters["title"])
+                    drawshadowtext(periods["daypartName"][bottomtomorrow], smallmedfont, 5-offz, 465, 5, 127, filters=filters["title"])
                     
             elif (currentsection == 2) and (len(customslides) > 0):
                 # CUSTOMSECT
                 if view != 0:
                     exec(customslides[view - 1][1])
-            
-            if transitiontime > 0 and not performance:
-                transitiontime -= 1
-                transition_s.set_alpha(round(transitiontime*255/60))
-                #window.blit(transition_s, (0, 65), pg.Rect(0, 65, screenwidth, 768-65-65))
-                window.blit(transition_s, (0, 0))
             
             if justswitched:
                 justswitched = False
@@ -2638,26 +3127,38 @@ def main():
                     return False
                 
                 if get_bigger():
+                    #check if we're on short presentation
+                    if presentation == "short" and schedule_active:
+                        currentscene = -1
+                        view = 0
+                        transitiontime = 60
+                        overdrawtime = 15
+                    else:
+                        view = 0
+                        currentsection += 1
+                        if currentsection > (totalseg + (len(customslides) > 0)):
+                            currentsection = 0
                 
-                    view = 0
-                    currentsection += 1
-                    if currentsection > (totalseg + (len(customslides) > 0)):
-                        currentsection = 0
                 if view == 6 and redmode:
                     view = 8
                 if view == 0 and len(alerts) > 0:
                     changetime = 60 * 45
+                    alertshow += 1
+                    alertshow = alertshow % len(alerts)
                 else:
                     changetime = 60 * 15
+                    if schedule_active:
+                        changetime = 60*10
+                        if view == 4:
+                            changetime = 60*15
                 justswitched = True
                 transitiontime = 60
-                transition_s = window.copy()
             else:
                 changetime -= 60 * delta
             
             #housekeeping
             realbotg = (bottomgradient if not redmode else bottomgradientred)
-            window.blit(realbotg, (0, 768-realbotg.get_height()))
+            window.blit(realbotg, (0, 768-realbotg.get_height()+cuefade*64))
             
             if tickertimer <= 0:
                 ticker += 1
@@ -2670,9 +3171,11 @@ def main():
                     tickertimer = 60 * actime
                 else:
                     tickertimer = 60 * 4
+                justticked = True
             else:
                 tickertimer -= 60 * delta
             
+            tickerf = tickerfader()
             tickerright = ""
             obstime = dt.datetime.strptime("-".join(weather2["validTimeLocal"].split("-")[:-1]), "%Y-%m-%dT%H:%M:%S")
             obstimeshort = splubby(obstime.strftime("%I:%M %p"))
@@ -2706,18 +3209,16 @@ def main():
             elif ticker == (6 + len(customtickers)):
                 tickername = ads[adindex]
             if not ((len(customtickers) > 0) and (ticker > 5) and (ticker <  (6 + len(customtickers)))):
-                drawshadowtext(tickername, smallmedfont, 5, 768-64+5, 5, 127, filters=filters["tickerleft"])
-                drawshadowtext(tickerright, smallmedfont, screenwidth-5-smallmedfont.size(tickerright)[0], 768-64+5, 5, 127, filters=filters["tickerright"])
+                tickerzz = (64*tickerf)
+                drawshadowtext(tickername, smallmedfont, 5, 768-64+5+tickerzz, 5, 127, filters=filters["tickerleft"])
+                drawshadowtext(tickerright, smallmedfont, screenwidth-5-smallmedfont.size(tickerright)[0], 768-64+5+tickerzz, 5, 127, filters=filters["tickerright"])
             if perfit:
-                window.blit(bottomshadow, (0, 768-realbotg.get_height()-bottomshadow.get_height()), special_flags=pg.BLEND_RGBA_MULT)
+                window.blit(bottomshadow, (0, 768-realbotg.get_height()-bottomshadow.get_height()+64*cuefade), special_flags=pg.BLEND_RGBA_MULT)
             
             #top bar (moved from top)
             if perfit:
-                window.blit(topshadow, (0, 64), special_flags=pg.BLEND_RGBA_MULT)
-            window.blit([topgradient, topgradienthealth, topgradientcustom][currentsection] if not redmode else topgradientred, (0, 0))
-            
-            
-            
+                window.blit(topshadow, (0, 64-cuefade*64), special_flags=pg.BLEND_RGBA_MULT)
+            window.blit([topgradient, topgradienthealth, topgradientcustom][currentsection] if not redmode else topgradientred, (0, -cuefade*64))
             
             #viewnames = ["Split View", "Overview", "Extended Forecast", "Hourly Graph", "Travel Cities", f"Weather Report ({periods['daypartName'][0+bottomtomorrowm]})", f"Weather Report ({periods['daypartName'][1+bottomtomorrowm]})", f"Weather Report ({periods['daypartName'][2+bottomtomorrowm]})", "Satellite/Radar Forecast" if not redmode else "Severe Weather Rader", "Probability of Precipitation" if not trackhurricanes else "Hurricane Tracker", "Forecast Office Headlines", "Alerts"]
             viewnames = lang["viewnames"] if not redmode else lang["viewnamesred"]
@@ -2729,7 +3230,11 @@ def main():
                 else:
                     viewName = get_lang_custom(customslides[view - 1][0])
             else:
-                viewName = namer(viewnames[view])
+                advisory = (len(alerts)>0)
+                if view == 0 and advisory:
+                    viewName = lang["alerts"]
+                else:
+                    viewName = namer(viewnames[view])
                 #viewName = "error"
             
             #if view == 2:
@@ -2741,21 +3246,16 @@ def main():
                 overridetime -= 60 * delta
                 viewName = name
             
-            if transitiontime == 0:
-                drawshadowtext(viewName, smallmedfont, screenwidth/2-smallmedfont.size(viewName)[0]/2, 5, 5, 127, filters=filters["title"])
-            else:
-                drawshadowtext(viewName, smallmedfont, screenwidth/2-smallmedfont.size(viewName)[0]/2, 5, 5, 127, round(255-transitiontime*255/60), filters=filters["title"])
-                drawshadowtext(lastname, smallmedfont, screenwidth/2-smallmedfont.size(lastname)[0]/2, 5, 5, 127, round(transitiontime*255/60), filters=filters["title"])
+            drawshadowtext(viewName, smallmedfont, screenwidth/2-smallmedfont.size(viewName)[0]/2, 5-fading*64, 5, 127, filters=filters["title"])
             
             if not hideleft:
                 if showfps:
-                    drawshadowtext(round(clock.get_fps()), smallmedfont, 5, 5, 5, 127)
+                    drawshadowtext(round(clock.get_fps()), smallmedfont, 5, 5, 5-cuefade*64, 127)
                 else:
-                    drawshadowtext(splubby(dt.datetime.now().strftime(timeformattop)), smallmedfont, 5, 5, 5, 127)
+                    drawshadowtext(splubby(dt.datetime.now().strftime(timeformattop)), smallmedfont, 5, 5-cuefade*64, 5, 127)
             
             if not hideright:
-                drawshadowtext(realstationname, smallmedfont, screenwidth-10-smallmedfont.size(realstationname)[0], 5, 5, 127)
-            #drawshadowtext("Pennsylvania", smallmedfont, screenwidth-10-smallmedfont.size("Pennsylvania")[0], 5, 5, 127)
+                drawshadowtext(realstationname, smallmedfont, screenwidth-10-smallmedfont.size(realstationname)[0], 5, 5-cuefade*64, 127)
             
             for fixture in customfixtures:
                 exec(fixture)
@@ -2829,7 +3329,7 @@ def main():
                 else:
                     drawshadowtext(lang["noalert"], smallmedfont, 5, 80+alerth, 5, 127)
             
-            if (get_bigger() and changetime <= 60*5):
+            if (get_bigger() and changetime <= 60*5 and not (schedule_active and presentation == "short") and not (currentsection == (2 if len(customslides) > 1 else 1))):
                 nextsect = currentsection + 1
                 if currentsection > (totalseg + (len(customslides) > 1)):
                     nextsect = 0
@@ -2838,7 +3338,7 @@ def main():
                     sectionscroll = -64
                 window.blit(nextbg, (screenwidth + sectionscroll, 64), pg.Rect(0, 0, 64, 640))
                 drawshadowtextroto(f"{lang['nextup']} {lang['sectionnames'][nextsect]}", smallishfont, screenwidth+sectionscroll+20, 768/2, 90, 5, ry=0.5)
-            if ((view == 0) and changetime >= 60*10):
+            if ((view == 0) and changetime >= 60*10 and not (schedule_active and presentation == "short")):
                 sectionscroll = lerp(sectionscroll, 0, 0.04)
                 if round(sectionscroll) == 0:
                     sectionscroll = 0
@@ -2846,9 +3346,9 @@ def main():
                 drawshadowtextroto(f"{lang['nextup']} {lang['sectionnames'][currentsection]}", smallishfont, screenwidth+sectionscroll+20, 768/2, 90, 5, ry=0.5)
             if not loading and "stream" in globals() and miniplayer:
                 if stream:
+                    st = profiling_start()
                     global streamdims_scaled
-                    rt, frame = realstream.read()
-                    frame = cv2.resize(frame, streamdims_scaled)
+                    frame = cv2.resize(rawframe, streamdims_scaled)
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     #frame = cv2.flip(frame, 1)
                     frame = cv2.transpose(frame)
@@ -2863,6 +3363,7 @@ def main():
                     global minigradient
                     window.blit(minigradient, (screenwidth - minigradient.get_width() - 5, 768-64-miniplayerheight-5))
                     window.blit(framesurf, (screenwidth - minigradient.get_width() - 5 + 4, 768-64-miniplayerheight-5 + 4))
+                    profiling_end(st, "time_stream")
         #lsd += 1
         #lsd = lsd % 360
         #lsdd = pg.Color(0, 0, 0, 127)
@@ -2871,13 +3372,27 @@ def main():
         #window.fill(lsdd, special_flags=pg.BLEND_RGBA_ADD)
         for action in actions["post"]:
             exec(action)
-        if writer:
-            winarray = pg.surfarray.array3d(window)
-            winarray = cv2.cvtColor(winarray, cv2.COLOR_RGB2BGR)
-            winarray = cv2.transpose(winarray)
-            global realwriter
-            realwriter.stdin.write(winarray.tobytes())
+        
+        if profile:
+            pr = time.perf_counter() - profst
+            global framect
+            global framesp
+            if cflag:
+                cflag = False
+                framect = 0
+                framesp = 0
+            framect += 1
+            framesp += pr
             
+            sinfo = ""
+            if stream:
+                if "realstream" in globals():
+                    sinfo = f"\nstream reported fps: {realstream.get(cv2.CAP_PROP_FPS)}"
+            fn = smallmedfont.render(f"stream: {safedivide(1, profiling['time_stream'])}\nmath: {safedivide(1, profiling['time_math'])}\nui: {safedivide(1, profiling['time_ui'])}\nother blits: {safedivide(1, profiling['time_blits'])}\nframe total: {pr}\nfps avg: {framect/framesp}{sinfo}", False, (255, 255, 255), (0, 0, 0))
+            window.blit(fn, (0, 0))
+        
+        eventt.set()
+        
         if scaled:
             if smoothsc:
                 final.blit(pg.transform.smoothscale(window, scale), (0, 0))
@@ -2886,10 +3401,28 @@ def main():
         #opswindow.fill((0, 130, 255))
         #drawshadowtext("Admin Panel", smallmedfont, 5, 5, 5, wind=opswindow)
         realwindow.flip()
+        clear_profile()
         #realops.flip()
 
 if not getattr(pg, "IS_CE", False):
     print("Pygame CE is no longer required for this application. At least, I think so. You're limited to drop shadows though.")
+
+
+def postmix(dev, mem):
+    #if not stinky:
+    #    pipe = os.open("lsaud", os.O_WRONLY)
+    #    os.write(pipe, bytes(mem))
+    #    os.close(pipe)
+    for action in actions["mix"]:
+        exec(action)
+
+def makefifo():
+    os.mkfifo("lsaud")
+    os.mkfifo("lsvid")
+
+def breakfifo():
+    os.unlink("lsaud")
+    os.unlink("lsvid")
 
 if writer:
     global realwriter
@@ -2897,13 +3430,17 @@ if writer:
         '-f', 'rawvideo',
         '-pix_fmt', 'bgr24',
         '-s', '{}x{}'.format(screenwidth, 768),
+        '-re',
         '-i', '-',
-        '-stream_loop', '-1',
-        '-i', audiofile,
+        #'-re',
+        #'-f', 'f32le',
+        #'-ar', '44100',
+        #'-ac', '2',
+        #'-i', 'lsaud',
         '-c:v', 'libx264',
-        '-c:a', 'aac',
+        #'-c:a', 'aac',
         '-preset', 'veryfast',
-        '-r', '24',
+        '-r', '60',
         '-f', 'flv',
         writer
     ]
@@ -2912,44 +3449,45 @@ if writer:
         writerstring = "[f=flv]" + "|[f=flv]".join(writer)
         cmd = ['ffmpeg',
             '-f', 'rawvideo',
-            '-re',
             '-pix_fmt', 'bgr24',
             '-s', '{}x{}'.format(screenwidth, 768),
+            '-re',
             '-i', '-',
-            '-stream_loop', '-1',
-            '-i', audiofile,
+            #'-f', 'f32le',
+            #'-i', '/tmp/lsaud',
             '-c:v', 'libx264',
-            '-c:a', 'aac',
+            #'-c:a', 'aac',
             '-preset', 'veryfast',
-            '-r', '24',
+            '-r', '60',
             '-f', 'tee',
+            '-use_fifo', 'true',
             '-map', '0:v',
-            '-map', '1:a',
+            #'-map', '1:a',
             writerstring
         ]
         
-    if not audiofile:
-        cmd.remove('-i')
-        cmd.remove(audiofile)
-        cmd.remove('-c:a')
-        cmd.remove('aac')
-        cmd.remove('-stream_loop')
-        cmd.remove('-1')
-    
+    #makefifo()
     realwriter = sp.Popen(cmd, stdin=sp.PIPE)
+    imageth = th.Thread(target=imagethread)
+    imageth.daemon = True
+    imageth.start()
 
 try:
     main()
 except Exception as err:
-    print(err.__repr__())
+    print(tra.format_exc())
     work = True
     while work:
         for event in pg.event.get():
             if event.type == pg.QUIT:
                 work = False
         window.blit(gradientred, (0, 0))
-        drawshadowtext(err.__repr__(), smallfont, 15, 15, 5)
+        drawshadowtext(tra.format_exc(), smallfont, 15, 15, 5)
+        
         realwindow.flip()
 finally:
     if writer:
+        stinky = True
         realwriter.kill()
+        #if writer:
+        #    breakfifo()

@@ -2,6 +2,7 @@
     "temp": "Temperatur",
     "precip": "Niederschlag",
     "precipchance": "Niederschlagswahrscheinlichkeit",
+    "precipshort": "Niederschlag",
     "feels": "Gefühlte",
     "wind": "Wind",
     "gusts": "Böln",
@@ -22,9 +23,10 @@
     "high": "Hoch",
     "dataerror": "Datenfehler",
     "noalertshort": "Keine aktiven Warnungen.",
+    "yourweather": "Ihr Wetter...",
     "sectionnames": ["Wetterbedingungen", "Wetter+Gesundheit", "Benutzerdefinierte Folien"],
-    "viewnames": ["Nächste...", "Gespaltblick", "Überblick", "Erweiterte Vorhersage", "Stündliche Vorhersage", "Stündliche Graph", "Reise Städte", "Wetterbericht ($1)", "Wetterbericht ($2)", "Wetterbericht ($3)", "Almanach", "Lokales Radar", "Kredit4Team"],
+    "alerts": "Warnungen",
+    "viewnames": ["Nächste...", "Gespaltblick", "Überblick", "Erweiterte Vorhersage", "Stündliche Vorhersage", "Stündliche Graph", "Reise Städte", "Wetterbericht ($1)", "Wetterbericht ($2)", "Wetterbericht ($3)", "Lokales Radar", "Krediten"],
     "viewnameshealth": ["Nächste...", "Luftqualität", "UV-Index", "Pollenbericht"],
-    "viewnamesadvisory": ["Warnungen", "Gespaltblick", "Überblick", "Erweiterte Vorhersage", "Stündliche Vorhersage", "Stündliche Graph", "Reise Städte", "Wetterbericht ($1)", "Wetterbericht ($2)", "Wetterbericht ($3)", "Almanach", "Lokales Radar", "Kredit4Team"],
-    "viewnamesred": ["Warnungen", "Gespaltblick", "Überblick", "Erweiterte Vorhersage", "Stündliche Vorhersage", "Stündliche Graph", "Reise Städte", "Wetterbericht ($1)", "Wetterbericht ($2)", "Wetterbericht ($3)", "Almanach", "Unwetterradar", "Kredit4Team"]
+    "viewnamesred": ["Warnungen", "Gespaltblick", "Überblick", "Erweiterte Vorhersage", "Stündliche Vorhersage", "Stündliche Graph", "Reise Städte", "Wetterbericht ($1)", "Wetterbericht ($2)", "Wetterbericht ($3)", "Unwetterradar", "Krediten"]
 }

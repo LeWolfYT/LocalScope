@@ -6,24 +6,13 @@ Do you like the Wii Forecast Channel? Maybe The Weather Channel's older WeatherS
 
 Don't use any plugins or themes from untrustworthy sources. Because they have programming support, they can be used to execute arbitrary code on your computer. Only use plugins and themes that come bundled or reviewed ones from the upcoming LocalScope Depot unless you know what you're doing.
 
-## What's new in The Everything Update?
+## What's new in The Scheduling Update?
 
-- Plugin support
-- Themes can now have custom code
-- Icon pack support
-- Text-based hourly forecast
-- A new health section
-  - UV index
-  - Air quality
-  - Pollen count
-- Support for reading from online streams
-- Built-in streaming support
-- Various bug fixes and improvements
-- A new compact mode
-- Custom screen width settings
-- Improved performance (thanks to caching and other optimizations)
+- Fade transition replaced with more sliding animations
+- New scheduling system that allows you to schedule local forecasts
+- Various improvements and bug fixes
 
-Note: Performance mode is currently unstable and may have various issues with drawing the screen. Use with caution.
+Note: Performance mode is untested with the latest version!
 Note 2: Update your language files, since many new strings have been added.
 
 ## Bundled Plugins
@@ -50,10 +39,7 @@ Note: The only fully complete theme is Metallic. Intelli currently only affects 
 While setting up the app, you'll need to create a `vars.py` file in the same folder as the main program. An example is demonstrated below.
 
 ```py
-weatheraddr = "http://wttr.in/?format=j2" #not used usually
 coords = "lat,long" #no spaces
-forcecoords = True #please use unless you are using musicmode="daytime". wttr.in is outdated
-station = "KPIT"
 timezone = "EST"
 
 sysfont = True #will use a system font if true, ttf if false
@@ -90,6 +76,7 @@ backgroundred = "/path/to/redimg.jpg"
 units = "e" #any TWC unit type works here
 locale = "en-US" #currently the only officially supported languages are en-US (American English) and de-DE (German). Add your own languages by adding JSON files with the locale name in the lang folder.
 apikey = 'KEY GOES HERE'
+mapkey = 'also here'
 extendedfamount = 18 #how many days+nights of extended forecast to show. keep this even for best results
 
 #leave these out if you don't want to use them
@@ -116,6 +103,12 @@ watermark_path = '/path/to/watermark.png' #path to the watermark image
 #these next two can be useful for if you're using custom fixtures that take up one of these slots (like the countdown plugin)
 hide_fixture_left = False #if true, will hide the left fixture
 hide_fixture_right = False #if true, will hide the right fixture
+
+scheduled = True #if true, will enable the scheduling system
+schedule_mode = "minutes" #still in the works, but "minutes" will use minutes and "hours" will use hours
+schedule_times = [18, 48] #times that a local forecast will be shown
+sidebar_times = [8, 28, 38, 58] #times that the sidebar will be shown
+presentation = "short" #short is just weather, long is weather and other stuff
 
 ```
 
@@ -157,6 +150,8 @@ color_c = ((r1, g1, b1), (r2, g2, b2))
 `gradient_c` (Background)
 
 `gradient_redc` (Background, red mode)
+
+`sidebar_c` (Sidebar)
 
 `topgradient_c` (Infobar)
 
